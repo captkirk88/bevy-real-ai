@@ -1,0 +1,13 @@
+/target
+*.DS_Store
+.idea
+.vscode
+*.log
+.env
+/temp
+*.db
+/coverage
+*.prof
+*.lock
+**/testdata
+*.toy

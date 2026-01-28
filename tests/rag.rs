@@ -1,6 +1,5 @@
 use bevy::prelude::*;
-use rustlicious::npc_dialogue::{AIDialoguePlugin, LocalAiHandle, DialogueReceiver, Speaker};
-use rustlicious::{LocalAi, rag::AiMessage};
+use rustlicious::prelude::*;
 use std::sync::Arc;
 
 struct EchoAi;

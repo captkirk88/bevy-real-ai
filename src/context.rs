@@ -1,4 +1,5 @@
 use bevy::prelude::*;
+use bevy::ecs::system::{SystemParam};
 
 /// Marker component that indicates an entity should be considered for AI context gathering.
 /// Only entities with this component will be scanned for nearby context information.
@@ -25,118 +26,143 @@ impl Default for ContextGatherConfig {
 #[derive(Resource, Default, Debug)]
 pub struct ContextGatherRequest(pub Option<Entity>);
 
-/// Trait for components that can summarize themselves into a short text snippet
-/// suitable for inclusion in AI context. Implement this on any component that should
-/// be easy to summarize (e.g. inventories, simple status components).
-pub trait AiDescribe: Send + Sync + 'static {
-    /// Return a short summary or None if nothing useful to report.
-    /// Takes the entity ID and world reference for richer context-aware summarization.
-    fn summarize(&self, entity: Entity, world: &World) -> Option<String>;
+/// Temporary resource holding the entity being processed by context gathering systems.
+/// Systems read this to know which entity they're gathering context for.
+#[derive(Resource, Debug, Clone, Copy)]
+pub struct CurrentContextEntity(pub Entity);
+
+/// Custom system parameter providing easy access to the current AI context entity.
+/// Systems can use this parameter to get the entity being processed by the gather function.
+#[derive(SystemParam)]
+pub struct AiEntity<'w>(Res<'w, CurrentContextEntity>);
+
+impl<'w> AiEntity<'w> {
+    /// Get the entity being processed for AI context gathering
+    pub fn entity(&self) -> Entity {
+        self.0.0
+    }
 }
 
-use bevy::prelude::World;
-use std::sync::Arc;
+impl<'w> std::ops::Deref for AiEntity<'w> {
+    type Target = Entity;
+    
+    fn deref(&self) -> &Self::Target {
+        &self.0.0
+    }
+}
 
-/// Registry mapping component types to extractor functions that can summarize them.
+/// Type alias for a context-gathering Bevy System.
+/// Systems are stored as boxed systems that read CurrentContextEntity resource
+/// and return an optional `AiMessage` via world.run_system_with((), &mut system).
+pub type AiContextSystem = Box<dyn System<In = (), Out = Option<crate::rag::AiMessage>>>;
+
+/// Registry of Bevy Systems that gather and build AI context for entities.
+/// Systems are stored as boxed dyn System and invoked via world.run_system_with with () input.
 #[derive(Resource, Default)]
-pub struct ContextExtractorRegistry {
-    extractors: Vec<Arc<dyn Fn(Entity, &World) -> Option<String> + Send + Sync>>,
+pub struct AiSystemContextStore {
+    systems: Vec<AiContextSystem>,
 }
 
-impl ContextExtractorRegistry {
-    pub fn new() -> Self { Self { extractors: Vec::new() } }
-
-    /// Register an extractor for a concrete component type `T`.
-    pub fn register<T: Component + 'static, F>(&mut self, f: F)
-    where
-        F: Fn(&T, Entity, &World) -> Option<String> + Send + Sync + 'static,
-    {
-        let cb = Arc::new(move |ent: Entity, world: &World| {
-            world.get::<T>(ent).and_then(|c| f(c, ent, world))
-        }) as Arc<dyn Fn(Entity, &World) -> Option<String> + Send + Sync>;
-        self.extractors.push(cb);
+impl AiSystemContextStore {
+    pub fn new() -> Self {
+        Self {
+            systems: Vec::new(),
+        }
     }
 
-    /// Convenience helper to register an extractor for types that implement `AiDescribe`.
-    pub fn register_summarizable<T: Component + AiDescribe + 'static>(&mut self) {
-        self.register::<T, _>(|c: &T, ent: Entity, world: &World| c.summarize(ent, world));
+    /// Add a context-gathering system to the store.
+    /// The system function receives an Entity and mutable World reference, and returns an optional AiMessage.
+    pub fn add_system(&mut self, system: AiContextSystem) {
+        self.systems.push(system);
+    }
+
+    /// Get a reference to all registered systems.
+    pub fn systems(&self) -> &[AiContextSystem] {
+        &self.systems
+    }
+
+    /// Get a mutable reference to all registered systems (for internal use).
+    pub fn systems_mut(&mut self) -> &mut [AiContextSystem] {
+        &mut self.systems
     }
 }
 
-/// On-demand gather system: when `ContextGatherRequest` contains an entity, collect nearby
-/// entities by iterating world entities and calling registered extractors.
+/// On-demand gather system: when `ContextGatherRequest` contains an entity, run all context-gathering
+/// systems from `AiSystemContextStore` in order. Systems read CurrentContextEntity resource to know
+/// which entity they're gathering context for. Returned messages are collected and added to the entity's `AiContext`.
 pub fn gather_on_request_world(world: &mut World) {
     // Take and release the request resource to avoid long mutable borrow
     let ent_opt = {
-        let mut req = match world.get_resource_mut::<ContextGatherRequest>() { Some(r) => r, None => return };
+        let mut req = match world.get_resource_mut::<ContextGatherRequest>() {
+            Some(r) => r,
+            None => return,
+        };
         req.0.take()
     };
     let Some(ent) = ent_opt else { return };
 
-    let cfg = if let Some(cfg) = world.get_resource::<ContextGatherConfig>() { cfg.clone() } else { return };
-    // Clone extractors out of the registry to avoid holding the registry borrow during world queries
-    let extractors = {
-        let reg = match world.get_resource::<ContextExtractorRegistry>() { Some(r) => r, None => return };
-        reg.extractors.clone()
-    };
+    // Insert the temporary resource so systems can read which entity they're processing
+    world.insert_resource(CurrentContextEntity(ent));
 
-    let mut added = 0usize;
-
-    // Find the requester's transform first (requester doesn't need to be AI-aware to request context)
-    let requester_t = {
-        let mut q_requester = world.query::<(Entity, &Transform)>();
-        let mut requester_t_opt = None;
-        for (e, t) in q_requester.iter(world) {
-            if e == ent { 
-                requester_t_opt = Some(t.clone()); 
-                break; 
-            }
-        }
-        match requester_t_opt {
-            Some(t) => t,
-            None => return, // Requester has no transform
+    // Get the number of systems to run
+    let num_systems = {
+        match world.get_resource::<AiSystemContextStore>() {
+            Some(store) => store.systems.len(),
+            None => return,
         }
     };
 
-    // iterate entities with transforms and AI awareness to compute distances compactly
-    let mut q = world.query::<(Entity, &Transform, &AIAware)>();
+    // Collect messages from all systems
+    let mut messages = Vec::new();
 
-    // Collect summaries per entity (grouped) to produce a single natural-language
-    // context message per nearby entity, which models typically handle better.
-    use std::collections::HashMap;
-    let mut per_entity: HashMap<Entity, Vec<String>> = HashMap::new();
+    // Run each system with () input - systems read CurrentContextEntity from world
+    for i in 0..num_systems {
+        if let Some(mut store) = world.get_resource_mut::<AiSystemContextStore>() {
+            if i < store.systems.len() {
+                // Take ownership of the system
+                let mut system = store.systems.remove(i);
+                drop(store); // Release the borrow
 
-    for (e, t, _) in q.iter(world) {
-        if e == ent { continue; }
-        let dist_sq = requester_t.translation.distance_squared(t.translation);
-        if dist_sq > cfg.radius * cfg.radius { continue; }
+                // Initialize the system
+                system.initialize(world);
+                
+                // Run the system directly with &mut World
+                let result = system.run((), world);
 
-        // Call each registered extractor; accumulate any returned summaries for this entity
-        for (_i, ex) in extractors.iter().enumerate() {
-            if let Some(txt) = ex(e, world) {
-                per_entity.entry(e).or_insert_with(Vec::new).push(txt);
-                added += 1;
-                if added >= cfg.max_docs { break; }
+                // Apply any deferred commands
+                system.apply_deferred(world);
+
+                // Collect the returned message if present
+                if let Ok(Some(msg)) = result {
+                    messages.push(msg);
+                }
+
+                // Put the system back
+                if let Some(mut store) = world.get_resource_mut::<AiSystemContextStore>() {
+                    store.systems.insert(i, system);
+                }
             }
         }
-
-        if added >= cfg.max_docs { break; }
     }
 
-    // Attach combined messages as an `AiContext` component on the requester entity
+    // Remove the temporary resource
+    world.remove_resource::<CurrentContextEntity>();
+
+    // Attach collected messages as an `AiContext` component on the requester entity if any were returned
     use crate::rag::AiContext;
-    if !per_entity.is_empty() {
+    if !messages.is_empty() {
         let mut context = AiContext::new();
-        let mut observations = Vec::new();
-        for (_entity, vec) in per_entity.iter() {
-            // Join extractor outputs into natural language descriptions
-            let joined = vec.join(". ");
-            observations.push(joined);
+        for msg in messages {
+            // Messages from systems should be converted to system context
+            if let crate::rag::AiMessage::System(text) = msg {
+                context.add_context(text);
+            } else {
+                // If a system returns a user/assistant message, convert to system context
+                context.add_context(format!("{:?}", msg));
+            }
         }
-        // Format as observations about the scene, not about the AI itself
-        let scene_description = format!("{}", observations.join("; "));
-        context.add_context(scene_description);
         // Safe to insert component even if present; replace existing context
         world.entity_mut(ent).insert(context);
     }
 }
+

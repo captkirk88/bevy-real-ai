@@ -1,5 +1,5 @@
 use bevy::prelude::*;
-use rustlicious::npc_dialogue::*;
+use rustlicious::prelude::*;
 use std::sync::Arc;
 
 

@@ -1,66 +1,165 @@
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::LazyLock;
 
 use kalosm::language::*;
+use crossbeam_channel;
 
-use crate::{LocalAi, rag::AiMessage};
+use crate::dialogue::LocalAi;
+use crate::rag::AiMessage;
 
-#[derive(Clone, Copy)]
-pub enum Type {
-    Llama,
+/// Global tokio runtime for async operations - creating a runtime per call is very expensive
+static TOKIO_RUNTIME: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
+    tokio::runtime::Runtime::new().expect("Failed to create global tokio runtime")
+});
+
+/// Represents the state of a model download operation
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DownloadState {
+    InProgress,
+    Completed,
+    Error,
 }
 
-impl Type {
-    pub fn new(&self) -> ModelBuilder {
-        ModelBuilder::new(*self)
-    }
+/// Progress information for model downloads sent via crossbeam-channel
+#[derive(Debug, Clone)]
+pub struct ModelDownloadProgress {
+    pub state: DownloadState,
+    pub message: String,
+    pub progress: Option<f32>, // 0.0 to 1.0 for InProgress, None otherwise
 }
 
 #[derive(Clone)]
 pub struct ModelBuilder {
-    model_type: Type,
     file_source: Option<FileSource>,
+    progress_chan_tx: Option<crossbeam_channel::Sender<ModelDownloadProgress>>,
+    progress_chan_rx: Option<crossbeam_channel::Receiver<ModelDownloadProgress>>,
+    include_default_context: bool,
 }
 
 impl ModelBuilder {
-    pub fn new(model_type: Type) -> Self {
-        Self {
-            model_type,
+    pub fn new() -> Self {
+        Self { 
             file_source: None,
+            progress_chan_tx: None,
+            progress_chan_rx: None,
+            include_default_context: true,
         }
     }
 
+    pub fn include_default_context(mut self, include: bool) -> Self {
+        self.include_default_context = include;
+        self
+    }
+
+    /// Specify a local file path as the source for the AI model. Recommend .gguf files.
     pub fn with_local(mut self, path: PathBuf) -> Self {
         self.file_source = Some(FileSource::Local(path));
         self
     }
 
-    pub fn with_huggingface(mut self, repo_id: String, revision: String, file: String) -> Self {
-        self.file_source = Some(FileSource::HuggingFace{ model_id: repo_id, revision: revision, file: file });
+    /// Specify a HuggingFace model as the source for the AI model.
+    pub fn with_huggingface(mut self, repo_id: &str, revision: &str, file: &str) -> Self {
+        self.file_source = Some(FileSource::HuggingFace {
+            model_id: repo_id.to_string(),
+            revision: revision.to_string(),
+            file: file.to_string(),
+        });
         self
     }
 
-    pub fn build(&self) -> Result<Box<dyn LocalAi + 'static>, String> {
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| format!("Failed to create tokio runtime: {}", e))?;
-        rt.block_on(async {
-            match self.model_type {
-                Type::Llama => {
-                    let source = match self.file_source.clone() {
-                        Some(path) => LlamaSource::new(path),
-                        None => LlamaSource::qwen_2_5_1_5b_instruct(),
-                    };
-                    let model = Llama::builder()
-                        .with_source(LlamaSource::llama_3_2_1b_chat())
-                        .build()
-                        .await
-                        .map_err(|e| format!("Failed to load Llama model: {}", e))?;
-                    Ok(
-                        Box::new(
-                            AIModel::new(model.boxed_chat_model()).include_default_prompt(true),
-                        ) as Box<dyn LocalAi>,
-                    )
+    /// Enable progress tracking for model downloads. Returns self for chaining.
+    /// 
+    /// If not called, progress updates will be viewed on the terminal only.
+    pub fn with_progress(mut self) -> Self {
+        let (tx, rx) = crossbeam_channel::unbounded::<ModelDownloadProgress>();
+        self.progress_chan_tx = Some(tx);
+        self.progress_chan_rx = Some(rx);
+        self
+    }
+
+    /// Extract the progress receiver after enabling with_progress().
+    /// Returns None if with_progress() was not called.
+    pub fn take_progress_receiver(&mut self) -> Option<crossbeam_channel::Receiver<ModelDownloadProgress>> {
+        self.progress_chan_rx.take()
+    }
+
+
+    pub fn build_chat(&self) -> Result<Arc<dyn LocalAi>, String> {
+        // Use global runtime instead of creating a new one
+        TOKIO_RUNTIME.block_on(async {
+            let source = match self.file_source.clone() {
+                Some(path) => LlamaSource::new(path),
+                // Use Llama 3.2 1B as default - fast on CPU, good instruction following, less restrictive
+                None => LlamaSource::llama_3_2_1b_chat(),
+            };
+            
+            let builder = Llama::builder().with_source(source);
+            
+            // If a progress channel is provided, use build_with_loading_handler
+            if let Some(tx) = &self.progress_chan_tx {
+                let closure_tx = tx.clone();
+                match builder.build_with_loading_handler(move |handler| {
+                    
+                    match closure_tx.send(ModelDownloadProgress {
+                        state: if handler.progress() >= 100.0 {
+                            DownloadState::Completed
+                        } else {
+                            DownloadState::InProgress
+                        },
+                        message: format!("{:.0}", handler.progress()),
+                        progress: Some(handler.progress()),
+                    }){
+                        Ok(_) => {},
+                        Err(e) => {
+                            eprintln!("Failed to send model download progress: {}", e);
+                        }
+                    }
+                }).await {
+                    Ok(m) => {
+                        let model = AIModel::new(m.boxed_chat_model()).include_default_prompt(self.include_default_context);
+                        let arc_model: Arc<dyn LocalAi> = Arc::new(model);
+                        return Ok(arc_model);
+                    },
+                    Err(e) => {
+                        if let Some(tx) = &self.progress_chan_tx {
+                            let _ = tx.send(ModelDownloadProgress {
+                                state: DownloadState::Error,
+                                message: format!("Failed to load Llama model: {}", e),
+                                progress: None,
+                            });
+                        }
+                        return Err(format!("Failed to load Llama model: {}", e));
+                    }
                 }
+
             }
+            
+            let model = builder
+                .build()
+                .await
+                .map_err(|e| {
+                    if let Some(tx) = &self.progress_chan_tx {
+                        let _ = tx.send(ModelDownloadProgress {
+                            state: DownloadState::Error,
+                            message: format!("Failed to load Llama model: {}", e),
+                            progress: None,
+                        });
+                    }
+                    format!("Failed to load Llama model: {}", e)
+                })?;
+            
+            if let Some(tx) = &self.progress_chan_tx {
+                let _ = tx.send(ModelDownloadProgress {
+                    state: DownloadState::Completed,
+                    message: "Model loaded successfully".to_string(),
+                    progress: Some(1.0),
+                });
+            }
+            
+            let ai_model = AIModel::new(model.boxed_chat_model()).include_default_prompt(self.include_default_context);
+            let arc_model: Arc<dyn LocalAi> = Arc::new(ai_model);
+            Ok(arc_model)
         })
     }
 }
@@ -92,15 +191,11 @@ impl AIModel {
     }
 }
 
-
 impl LocalAi for AIModel {
     #[allow(deprecated)]
     fn prompt(&self, messages: &[AiMessage]) -> Result<String, String> {
-        // Create a tokio runtime to run the async kalosm code
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| format!("Failed to create tokio runtime: {}", e))?;
-
-        rt.block_on(async {
+        // Use global runtime instead of creating a new one each call
+        TOKIO_RUNTIME.block_on(async {
             let chat_session = match &self.session {
                 Some(session) => session.clone(),
                 None => match self.model.new_chat_session() {
@@ -129,7 +224,7 @@ impl LocalAi for AIModel {
             for message in messages {
                 match message {
                     AiMessage::User(text) => {
-                        conversation_parts.push(format!("User: {}", text));
+                        conversation_parts.push(format!("{}", text));
                     }
                     AiMessage::Assistant(_) => {
                         // Assistant messages are deprecated and not used in prompt construction
@@ -150,8 +245,11 @@ impl LocalAi for AIModel {
     }
 }
 
-const DEFAULT_SYSTEM_PROMPT: &str = "You are an NPC.
+const DEFAULT_SYSTEM_PROMPT: &str = "You are an NPC in a game. Answer ONLY using the facts given below.
 
-Answer questions using only these facts. Do not invent anything. Do not explain. Do not add details.
-
-Keep responses short and factual.";
+RULES:
+- Use ONLY the information provided in the context
+- If the answer is not in the context, say: I don't know
+- Keep answers very short (1-2 sentences max)
+- Never make up information
+- Never explain or add details";

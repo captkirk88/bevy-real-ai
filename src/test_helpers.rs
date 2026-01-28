@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use bevy::prelude::*;
-use crate::npc_dialogue::{DialogueRequest, DialogueRequestQueue, DialogueReceiver};
+use crate::dialogue::{DialogueRequest, DialogueReceiver, DialogueRequestQueue};
 use std::time::Duration;
 
 /// Ask the AI (by queueing a `DialogueRequest`) and wait for a response to
@@ -21,10 +21,18 @@ pub fn ask_ai_and_wait(app: &mut App, entity: Entity, prompt: &str, max_updates:
                 return Some(resp.clone());
             }
         }
-        std::thread::sleep(Duration::from_millis(10));
+        std::thread::sleep(Duration::from_millis(1));
     }
 
     None
+}
+
+/// Ask the AI and wait for a response, returning a Result.
+///
+/// Returns `Ok(response)` if successful, `Err(msg)` if timeout or empty response.
+pub fn ask_ai_and_wait_result(app: &mut App, entity: Entity, prompt: &str, max_updates: usize) -> Result<String, String> {
+    ask_ai_and_wait(app, entity, prompt, max_updates)
+        .ok_or_else(|| format!("AI response timeout after {} updates", max_updates))
 }
 
 /// Convenience helper that asserts the AI response matches the provided predicate.

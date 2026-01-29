@@ -6,6 +6,12 @@ use bevy::ecs::system::{SystemParam};
 #[derive(Component, Debug, Clone, Copy)]
 pub struct AIAware;
 
+/// Marker component that tags an entity as an AI entity.
+/// Entities with this component can use the `AiEntity` system parameter to access their transform.
+#[derive(Component, Debug, Clone, Copy, Default)]
+#[component(storage = "SparseSet")]
+pub struct AI;
+
 /// Configuration for on-demand context gathering.
 #[derive(Resource, Debug, Clone)]
 pub struct ContextGatherConfig {
@@ -31,23 +37,77 @@ pub struct ContextGatherRequest(pub Option<Entity>);
 #[derive(Resource, Debug, Clone, Copy)]
 pub struct CurrentContextEntity(pub Entity);
 
-/// Custom system parameter providing easy access to the current AI context entity.
-/// Systems can use this parameter to get the entity being processed by the gather function.
+/// Custom system parameter providing easy access to the current AI context entity,
+/// the context gathering configuration, and spatial queries.
+/// Systems can use this parameter to get the entity being processed by the gather function
+/// and to check spatial relationships with other entities.
 #[derive(SystemParam)]
-pub struct AiEntity<'w>(Res<'w, CurrentContextEntity>);
+pub struct AiEntity<'w, 's> {
+    current: Res<'w, CurrentContextEntity>,
+    config: Res<'w, ContextGatherConfig>,
+    transforms: Query<'w, 's, &'static Transform, With<AI>>,
+}
 
-impl<'w> AiEntity<'w> {
+impl<'w, 's> AiEntity<'w, 's> {
     /// Get the entity being processed for AI context gathering
     pub fn entity(&self) -> Entity {
-        self.0.0
+        self.current.0
+    }
+
+    /// Get the Transform component of the AI entity being processed.
+    /// Returns None if the entity has no Transform.
+    pub fn transform(&self) -> Option<&Transform> {
+        self.transforms.get(self.current.0).ok()
+    }
+
+    /// Get the position (translation) of the AI entity being processed.
+    /// Returns None if the entity has no Transform.
+    pub fn position(&self) -> Option<Vec3> {
+        self.transform().map(|t| t.translation)
+    }
+
+    /// Get the context gathering configuration
+    pub fn config(&self) -> &ContextGatherConfig {
+        &self.config
+    }
+
+    /// Get the configured gather radius
+    pub fn radius(&self) -> f32 {
+        self.config.radius
+    }
+
+    /// Get the configured max documents limit
+    pub fn max_docs(&self) -> usize {
+        self.config.max_docs
+    }
+
+    /// Check if a position is within the gather radius of a given origin position.
+    /// Returns true if the distance between origin and other_pos is within the configured radius.
+    pub fn aware_of_pos(&self, origin: Vec3, other_pos: Vec3) -> bool {
+        origin.distance(other_pos) <= self.config.radius
+    }
+
+    /// Check if a position is within the gather radius of the AI entity.
+    /// Returns false if the AI entity has no Transform.
+    pub fn aware_of(&self, other_pos: Vec3) -> bool {
+        self.position()
+            .map(|pos| pos.distance(other_pos) <= self.config.radius)
+            .unwrap_or(false)
+    }
+
+    /// Check if another entity should be considered for context gathering.
+    /// Returns true if the entity is not the requester itself and is within the gather radius.
+    /// Returns false if the AI entity has no Transform.
+    pub fn is_nearby(&self, other_entity: Entity, other_pos: Vec3) -> bool {
+        other_entity != self.current.0 && self.aware_of(other_pos)
     }
 }
 
-impl<'w> std::ops::Deref for AiEntity<'w> {
+impl<'w, 's> std::ops::Deref for AiEntity<'w, 's> {
     type Target = Entity;
     
     fn deref(&self) -> &Self::Target {
-        &self.0.0
+        &self.current.0
     }
 }
 
@@ -71,9 +131,18 @@ impl AiSystemContextStore {
     }
 
     /// Add a context-gathering system to the store.
-    /// The system function receives an Entity and mutable World reference, and returns an optional AiMessage.
-    pub fn add_system(&mut self, system: AiContextSystem) {
-        self.systems.push(system);
+    /// 
+    /// The system should return an `Option<AiMessage>` and can use any valid Bevy system parameters.
+    /// 
+    /// # Example
+    /// ```ignore
+    /// store.add_system(|ai_entity: AiEntity, query: Query<&MyComponent>| {
+    ///     // gather context...
+    ///     Some(AiMessage::system("context"))
+    /// });
+    /// ```
+    pub fn add_system<M>(&mut self, system: impl IntoSystem<(), Option<crate::rag::AiMessage>, M> + 'static) {
+        self.systems.push(Box::new(IntoSystem::into_system(system)));
     }
 
     /// Get a reference to all registered systems.

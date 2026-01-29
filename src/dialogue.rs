@@ -78,9 +78,16 @@ pub struct DialogueResponse {
 
 use std::collections::VecDeque;
 
+/// Resource holding the queue of outgoing dialogue requests
 #[derive(Resource, Default)]
 pub struct DialogueRequestQueue {
     pub queue: VecDeque<DialogueRequest>,
+}
+
+/// Result of a prompt with session, containing the response and the updated session.
+pub struct PromptResult {
+    pub response: String,
+    pub session: kalosm::language::BoxedChatSession,
 }
 
 /// Trait to abstract local AI backends. Implementors should be quick to return or be used from a background thread.
@@ -88,6 +95,20 @@ pub trait LocalAi: Send + Sync + 'static {
     /// Accepts an iterator of `Message` so backends can distinguish
     /// between system/context and user messages without string parsing.
     fn prompt(&self, messages: &[AiMessage]) -> Result<String, String>;
+
+    /// Prompt with an optional existing session, returning the response and updated session.
+    /// This allows conversation history to be preserved across calls.
+    /// The default implementation creates a new session each time.
+    fn prompt_with_session(
+        &self,
+        messages: &[AiMessage],
+        _session: Option<kalosm::language::BoxedChatSession>,
+    ) -> Result<PromptResult, String> {
+        // Default implementation ignores session and just calls prompt
+        let _ = self.prompt(messages)?;
+        // Return a dummy error since we can't create a session without the model
+        Err("prompt_with_session not supported by this backend".to_string())
+    }
 }
 
 /// A handle resource that holds the backend and a channel for responses.
@@ -366,7 +387,7 @@ fn poll_responses_receiver(mut query: Query<&mut DialogueReceiver>, ai_handle: R
     // Drain all available responses without blocking
     while let Ok(resp) = ai_handle.rx.try_recv() {
         if let Ok(mut receiver) = query.get_mut(resp.entity) {
-            receiver.last_response = Some(resp.response.clone());
+            receiver.last_response = Some(resp.response.trim().to_string());
         }
     }
 }

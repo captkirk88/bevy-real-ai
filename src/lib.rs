@@ -15,5 +15,5 @@ pub mod context;
 pub mod prelude {
     pub use crate::dialogue::{AIDialoguePlugin, Speaker, DialogueReceiver, DialogueRequest, DialogueResponse, LocalAiHandle, DialogueRequestQueue, LocalAi, ModelDownloadProgressEvent, ModelDownloadTracker, ModelLoadComplete, spawn_model_load_tracker};
     pub use crate::rag::{AiMessage, AiContext};
-    pub use crate::context::{AiSystemContextStore, ContextGatherConfig, AiEntity};
+    pub use crate::context::{AiSystemContextStore, ContextGatherConfig, AiEntity, AI, AIAware};
 }

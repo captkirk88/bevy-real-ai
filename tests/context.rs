@@ -6,7 +6,10 @@ use rustlicious::prelude::*;
 #[test]
 fn gather_on_request_collects_nearby_entity_context() {
     let mut app = App::new();
-    let backend = ModelBuilder::new().build_chat().expect("failed to build model");
+    let backend = ModelBuilder::new()
+        .with_seed(42)  // Use fixed seed for deterministic test output
+        .build_chat()
+        .expect("failed to build model");
     app.add_plugins(MinimalPlugins).add_plugins(AIDialoguePlugin::with_backend(backend));
 
     // Define test-only component types to avoid leaking test-only types into the public API.
@@ -19,27 +22,18 @@ fn gather_on_request_collects_nearby_entity_context() {
     // Register a context-gathering system for the Character component
     // This system only gathers context from NEARBY Character entities (within radius of requester)
     let mut store = app.world_mut().resource_mut::<AiSystemContextStore>();
-    store.add_system(Box::new(IntoSystem::into_system(
+    store.add_system(
         |ai_entity: rustlicious::context::AiEntity,
-         config: Res<rustlicious::context::ContextGatherConfig>,
-         transforms: Query<&Transform>,
          characters: Query<(Entity, &Character, &Transform), With<rustlicious::context::AIAware>>| 
          -> Option<rustlicious::rag::AiMessage> {
-            // Get the requester's position
-            let requester_pos = match transforms.get(*ai_entity) {
-                Ok(t) => t.translation,
-                Err(_) => return None, // Requester has no transform
-            };
-            
-            // Gather context only from nearby Character entities
+            // Gather context only from nearby Character entities using the helper method
             let summaries: Vec<String> = characters.iter()
                 .filter(|(ent, _, transform)| {
-                    // Don't include the requester itself, and check distance
-                    *ent != *ai_entity && 
-                    transform.translation.distance(requester_pos) <= config.radius
+                    // Use the is_nearby helper to check entity and distance
+                    ai_entity.is_nearby(*ent, transform.translation)
                 })
                 .map(|(_, character, _)| {
-                    format!("{} has {}", character.name, character.items.join(" and "))
+                    format!("{}, a npc, has {}", character.name, character.items.join(" and "))
                 })
                 .collect();
             
@@ -49,10 +43,13 @@ fn gather_on_request_collects_nearby_entity_context() {
                 Some(rustlicious::rag::AiMessage::system(&summaries.join(". ")))
             }
         }
-    )));
+    );
 
-    // Spawn requester and a nearby entity with complete character info
-    let requester = app.world_mut().spawn((Transform::from_translation(Vec3::new(0.0,0.0,0.0)),)).id();
+    // Spawn requester (with AI tag) and a nearby entity with complete character info
+    let requester = app.world_mut().spawn((
+        Transform::from_translation(Vec3::new(0.0,0.0,0.0)),
+        rustlicious::context::AI,
+    )).id();
     let nearby = app.world_mut().spawn((
         Transform::from_translation(Vec3::new(1.0,0.0,0.0)), 
         Character { name: "Bob".into(), items: vec!["sword".into()] },
@@ -98,5 +95,4 @@ fn gather_on_request_collects_nearby_entity_context() {
         Err(e) => e,
     };
     eprintln!("AI response: {}", resp);
-    eprintln!("Request queue length after: {}", app.world().resource::<rustlicious::dialogue::DialogueRequestQueue>().queue.len());
 }

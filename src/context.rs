@@ -14,28 +14,67 @@ pub struct AI;
 
 /// Configuration for on-demand context gathering.
 #[derive(Resource, Debug, Clone)]
-pub struct ContextGatherConfig {
+pub struct AiContextGatherConfig {
     /// Search radius (world units) around the requester entity.
     pub radius: f32,
     /// Maximum number of documents to collect per gather request.
     pub max_docs: usize,
 }
 
-impl Default for ContextGatherConfig {
+impl AiContextGatherConfig {
+    /// Create a new `AiContextGatherConfig` with the given radius and max_docs.
+    pub fn new(radius: f32, max_docs: usize) -> Self {
+        Self { radius, max_docs }
+    }
+
+    pub fn with_radius(mut self, radius: f32) -> Self {
+        self.radius = radius;
+        self
+    }
+
+    pub fn with_max_docs(mut self, max_docs: usize) -> Self {
+        self.max_docs = max_docs;
+        self
+    }
+}
+
+impl Default for AiContextGatherConfig {
     fn default() -> Self {
         Self { radius: 10.0, max_docs: 8 }
     }
 }
 
-/// Resource used to request a single on-demand gather for an entity.
-/// Set this to Some(entity) to trigger one gather run; the system will clear it after running.
+/// Resource used to queue on-demand gather requests for entities.
+/// Multiple AI entities can request gathers; they are processed sequentially from the queue.
+/// Push entities onto this queue to trigger gather runs; one will be processed per world update.
 #[derive(Resource, Default, Debug)]
-pub struct ContextGatherRequest(pub Option<Entity>);
+pub struct ContextGatherRequest(pub Vec<Entity>);
+
+impl ContextGatherRequest {
+    /// Request a gather for the given entity (adds to end of queue).
+    pub fn request(&mut self, entity: Entity) {
+        self.0.push(entity);
+    }
+
+    /// Pop the next entity to gather for (removes from front of queue).
+    pub fn next(&mut self) -> Option<Entity> {
+        if self.0.is_empty() {
+            None
+        } else {
+            Some(self.0.remove(0))
+        }
+    }
+
+    /// Check if there are pending gather requests.
+    pub fn has_pending(&self) -> bool {
+        !self.0.is_empty()
+    }
+}
 
 /// Temporary resource holding the entity being processed by context gathering systems.
 /// Systems read this to know which entity they're gathering context for.
 #[derive(Resource, Debug, Clone, Copy)]
-pub struct CurrentContextEntity(pub Entity);
+pub struct AiCurrentContextEntity(pub Entity);
 
 /// Custom system parameter providing easy access to the current AI context entity,
 /// the context gathering configuration, and spatial queries.
@@ -43,9 +82,10 @@ pub struct CurrentContextEntity(pub Entity);
 /// and to check spatial relationships with other entities.
 #[derive(SystemParam)]
 pub struct AiEntity<'w, 's> {
-    current: Res<'w, CurrentContextEntity>,
-    config: Res<'w, ContextGatherConfig>,
+    current: Res<'w, AiCurrentContextEntity>,
+    config: Res<'w, AiContextGatherConfig>,
     transforms: Query<'w, 's, &'static Transform, With<AI>>,
+    aware_entities: Query<'w, 's, (Entity, &'static Transform), With<AIAware>>,
 }
 
 impl<'w, 's> AiEntity<'w, 's> {
@@ -67,7 +107,7 @@ impl<'w, 's> AiEntity<'w, 's> {
     }
 
     /// Get the context gathering configuration
-    pub fn config(&self) -> &ContextGatherConfig {
+    pub fn config(&self) -> &AiContextGatherConfig {
         &self.config
     }
 
@@ -101,6 +141,49 @@ impl<'w, 's> AiEntity<'w, 's> {
     pub fn is_nearby(&self, other_entity: Entity, other_pos: Vec3) -> bool {
         other_entity != self.current.0 && self.aware_of(other_pos)
     }
+
+    /// Get all nearby AIAware entities within the gather radius as set in `AiContextGatherConfig` resource.
+    /// Returns a vector of entities sorted by proximity (nearest first).
+    pub fn collect_nearby(&self) -> Vec<Entity> {
+        let mut nearby: Vec<(Entity, f32)> = self.aware_entities
+            .iter()
+            .filter_map(|(ent, transform)| {
+                if self.is_nearby(ent, transform.translation) {
+                    let distance = self.position()
+                        .map(|pos| pos.distance(transform.translation))
+                        .unwrap_or(f32::MAX);
+                    Some((ent, distance))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        
+        // Sort by distance (nearest first)
+        nearby.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        nearby.into_iter().map(|(ent, _)| ent).collect()
+    }
+
+    pub fn collect_nearby_dist(&self, radius: f32) -> Vec<(Entity, f32)> {
+        let mut nearby: Vec<(Entity, f32)> = self.aware_entities
+            .iter()
+            .filter_map(|(ent, transform)| {
+                if ent != self.current.0 {
+                    if let Some(ai_pos) = self.position() {
+                        let distance = ai_pos.distance(transform.translation);
+                        if distance <= radius {
+                            return Some((ent, distance));
+                        }
+                    }
+                }
+                None
+            })
+            .collect();
+        
+        // Sort by distance (nearest first)
+        nearby.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        nearby
+    }
 }
 
 impl<'w, 's> std::ops::Deref for AiEntity<'w, 's> {
@@ -112,7 +195,7 @@ impl<'w, 's> std::ops::Deref for AiEntity<'w, 's> {
 }
 
 /// Type alias for a context-gathering Bevy System.
-/// Systems are stored as boxed systems that read CurrentContextEntity resource
+/// Systems are stored as boxed systems that read AiCurrentContextEntity resource
 /// and return an optional `AiMessage` via world.run_system_with((), &mut system).
 pub type AiContextSystem = Box<dyn System<In = (), Out = Option<crate::rag::AiMessage>>>;
 
@@ -156,22 +239,23 @@ impl AiSystemContextStore {
     }
 }
 
-/// On-demand gather system: when `ContextGatherRequest` contains an entity, run all context-gathering
-/// systems from `AiSystemContextStore` in order. Systems read CurrentContextEntity resource to know
-/// which entity they're gathering context for. Returned messages are collected and added to the entity's `AiContext`.
+/// On-demand gather system: when `ContextGatherRequest` contains pending entities, run all context-gathering
+/// systems from `AiSystemContextStore` in order for the first pending entity. Systems read AiCurrentContextEntity 
+/// resource to know which entity they're gathering context for. Returned messages are collected and added to the 
+/// entity's `AiContext`. Processes one entity per call (one per world update).
 pub fn gather_on_request_world(world: &mut World) {
-    // Take and release the request resource to avoid long mutable borrow
+    // Pop the next entity from the queue
     let ent_opt = {
         let mut req = match world.get_resource_mut::<ContextGatherRequest>() {
             Some(r) => r,
             None => return,
         };
-        req.0.take()
+        req.next()
     };
     let Some(ent) = ent_opt else { return };
 
     // Insert the temporary resource so systems can read which entity they're processing
-    world.insert_resource(CurrentContextEntity(ent));
+    world.insert_resource(AiCurrentContextEntity(ent));
 
     // Get the number of systems to run
     let num_systems = {
@@ -184,7 +268,7 @@ pub fn gather_on_request_world(world: &mut World) {
     // Collect messages from all systems
     let mut messages = Vec::new();
 
-    // Run each system with () input - systems read CurrentContextEntity from world
+    // Run each system with () input - systems read AiCurrentContextEntity from world
     for i in 0..num_systems {
         if let Some(mut store) = world.get_resource_mut::<AiSystemContextStore>() {
             if i < store.systems.len() {
@@ -215,7 +299,7 @@ pub fn gather_on_request_world(world: &mut World) {
     }
 
     // Remove the temporary resource
-    world.remove_resource::<CurrentContextEntity>();
+    world.remove_resource::<AiCurrentContextEntity>();
 
     // Attach collected messages as an `AiContext` component on the requester entity if any were returned
     use crate::rag::AiContext;

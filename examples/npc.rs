@@ -13,9 +13,9 @@
 
 use bevy::ecs::observer::On;
 use bevy::prelude::*;
-use rustlicious::context::{AiSystemContextStore, ContextGatherRequest, AI, AIAware, AiEntity};
-use rustlicious::models::{DownloadState, ModelBuilder};
-use rustlicious::prelude::*;
+use bevy_ai_dialogue::context::{AiSystemContextStore, ContextGatherRequest, AI, AIAware, AiEntity};
+use bevy_ai_dialogue::models::{DownloadState, ModelBuilder};
+use bevy_ai_dialogue::prelude::*;
 
 /// Questions available for the player to ask (label, prompt)
 static QUESTIONS: &[(&str, &str)] = &[
@@ -27,21 +27,16 @@ static QUESTIONS: &[(&str, &str)] = &[
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
-        .add_plugins(setup_ai_plugin())
+        .add_plugins(AIDialoguePlugin::with_builder(
+            ModelBuilder::new()
+                .with_seed(42) // Optional: use fixed seed for consistent responses
+                .with_progress(), // Enable progress tracking for download UI
+        ).with_config(AiContextGatherConfig::default().with_radius(50.0)))
         .add_systems(Startup, setup_world)
         .add_systems(Update, (handle_input, display_dialogue, update_progress_bar))
         .add_observer(on_model_download_progress)
         .add_observer(on_model_load_complete)
         .run();
-}
-
-/// Set up the AI dialogue plugin with async model loading and progress tracking
-fn setup_ai_plugin() -> AIDialoguePlugin {
-    let builder = ModelBuilder::new()
-        .with_seed(42) // Optional: use fixed seed for consistent responses
-        .with_progress(); // Enable progress tracking for download UI
-
-    AIDialoguePlugin::with_builder(builder)
 }
 
 /// Components for our game entities
@@ -96,8 +91,8 @@ fn setup_world(mut commands: Commands, mut store: ResMut<AiSystemContextStore>) 
     // Spawn NPCs with AIAware marker (they provide context to AI)
     commands.spawn((
         Npc {
-            name: "Bob the Blacksmith".into(),
-            description: "A burly man with soot-covered arms".into(),
+            name: "Bob".into(),
+            description: "A strong craftsperson".into(),
         },
         Inventory {
             items: vec!["iron sword".into(), "steel shield".into(), "hammer".into()],
@@ -108,8 +103,8 @@ fn setup_world(mut commands: Commands, mut store: ResMut<AiSystemContextStore>) 
 
     commands.spawn((
         Npc {
-            name: "Elena the Herbalist".into(),
-            description: "An elderly woman surrounded by the scent of herbs".into(),
+            name: "Elena".into(),
+            description: "A knowledgeable woman".into(),
         },
         Inventory {
             items: vec!["healing potion".into(), "antidote".into(), "rare mushroom".into()],
@@ -120,8 +115,8 @@ fn setup_world(mut commands: Commands, mut store: ResMut<AiSystemContextStore>) 
 
     commands.spawn((
         Npc {
-            name: "Marcus the Guard".into(),
-            description: "A stern-looking guard in polished armor".into(),
+            name: "Marcus".into(),
+            description: "A skilled fighter".into(),
         },
         Inventory {
             items: vec!["spear".into(), "city keys".into()],
@@ -217,13 +212,15 @@ fn setup_world(mut commands: Commands, mut store: ResMut<AiSystemContextStore>) 
 fn gather_npc_context(
     ai_entity: AiEntity,
     npcs: Query<(Entity, &Npc, &Inventory, &Transform), With<AIAware>>,
-) -> Option<rustlicious::rag::AiMessage> {
+) -> Option<bevy_ai_dialogue::rag::AiMessage> {
+    let nearby_entities = ai_entity.collect_nearby();
+    
     let summaries: Vec<String> = npcs
         .iter()
-        .filter(|(ent, _, _, transform)| ai_entity.is_nearby(*ent, transform.translation))
+        .filter(|(ent, _, _, _)| nearby_entities.contains(ent))
         .map(|(_, npc, inventory, _)| {
             format!(
-                "{}, a npc, is nearby. {}. They have: {}",
+                "{}. Description: {}. Possessions: {}.",
                 npc.name,
                 npc.description,
                 inventory.items.join(", ")
@@ -234,7 +231,7 @@ fn gather_npc_context(
     if summaries.is_empty() {
         None
     } else {
-        Some(rustlicious::rag::AiMessage::system(&summaries.join("\n")))
+        Some(bevy_ai_dialogue::rag::AiMessage::system(&summaries.join("\n")))
     }
 }
 
@@ -243,7 +240,7 @@ fn handle_input(
     keyboard: Res<ButtonInput<KeyCode>>,
     player_query: Query<Entity, With<Player>>,
     mut context_request: ResMut<ContextGatherRequest>,
-    mut request_queue: ResMut<rustlicious::dialogue::DialogueRequestQueue>,
+    mut request_queue: ResMut<bevy_ai_dialogue::dialogue::DialogueRequestQueue>,
 ) {
     let Ok(player_entity) = player_query.single() else {
         return;
@@ -259,10 +256,10 @@ fn handle_input(
 
     if let Some(prompt) = prompt {
         // Gather context before asking
-        *context_request = ContextGatherRequest(Some(player_entity));
+        context_request.request(player_entity);
         
         info!("Asking: {}", prompt);
-        request_queue.push(rustlicious::dialogue::DialogueRequest {
+        request_queue.push(bevy_ai_dialogue::dialogue::DialogueRequest {
             entity: player_entity,
             prompt: prompt.to_string(),
         });
@@ -307,7 +304,7 @@ fn on_model_download_progress(
             }
         }
         DownloadState::Completed => {
-            progress.progress = 100.0;
+            progress.progress = 1.0;
         }
         DownloadState::Error => {
             info!("Model download error: {}", event.message);
@@ -347,7 +344,7 @@ fn on_model_load_complete(
         // Automatically gather context from nearby NPCs
         if let Ok(player_entity) = player_query.single() {
             info!("Gathering context from nearby NPCs...");
-            *context_request = ContextGatherRequest(Some(player_entity));
+            context_request.request(player_entity);
         }
     } else if let Some(ref err) = event.error_message {
         info!("Model '{}' failed to load: {}", event.model_name, err);
@@ -364,13 +361,13 @@ fn update_progress_bar(
         return; // Progress entity was despawned
     };
     
-    // Update progress bar fill width
+    // Update progress bar fill width (progress is 0.0-1.0)
     if let Ok(mut fill_node) = fill_query.single_mut() {
-        fill_node.width = Val::Percent(progress.progress);
+        fill_node.width = Val::Percent(progress.progress * 100.0);
     }
 
     // Update progress text
     if let Ok(mut text) = text_query.single_mut() {
-        **text = format!("Downloading model: {:.0}%", progress.progress);
+        **text = format!("Downloading model: {:.0}%", progress.progress * 100.0);
     }
 }

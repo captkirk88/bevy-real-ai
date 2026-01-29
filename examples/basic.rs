@@ -2,14 +2,14 @@
 //!
 //! Run with: `cargo run --example basic --release`
 //!
-//! This is the simplest possible example of using rustlicious for AI dialogue.
+//! This is the simplest possible example of using bevy_ai_dialogue for AI dialogue.
 //! Uses async model loading - requests are queued until the model is ready.
 //! See `npc_dialogue.rs` for a more complete example with progress bar UI.
 
 use bevy::ecs::observer::On;
 use bevy::prelude::*;
-use rustlicious::models::ModelBuilder;
-use rustlicious::prelude::*;
+use bevy_ai_dialogue::models::ModelBuilder;
+use bevy_ai_dialogue::prelude::*;
 
 fn main() {
     App::new()
@@ -48,7 +48,7 @@ fn setup(mut commands: Commands, mut request_queue: ResMut<DialogueRequestQueue>
     let entity = commands.spawn((
         Speaker::new("Player", "A curious person"),
         DialogueReceiver::new(),
-        rustlicious::context::AI,
+        bevy_ai_dialogue::context::AI,
     )).id();
 
     // Queue the request immediately - it will be processed once the model loads

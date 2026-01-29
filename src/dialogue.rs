@@ -166,18 +166,13 @@ impl LocalAiHandle {
     }
 }
 
-use crate::context::{ContextGatherConfig, ContextGatherRequest, AiSystemContextStore};
+use crate::context::{AiContextGatherConfig, ContextGatherRequest, AiSystemContextStore};
 
 /// Plugin that adds NPC dialogue capabilities with the provided LocalAi backend.
-///
-/// Resources:
-/// - `LocalAiHandle`: holds the backend and response channel
-/// - `DialogueRequestQueue`: queue of outgoing dialogue requests
-/// - `AiSystemContextStore`: registry for context-gathering systems (used by RAG)
 pub struct AIDialoguePlugin {
     pub backend: Option<Arc<dyn LocalAi>>,
     pub builder: Option<crate::models::ModelBuilder>,
-    pub gather_config: ContextGatherConfig,
+    pub gather_config: AiContextGatherConfig,
 }
 
 impl AIDialoguePlugin {
@@ -199,6 +194,14 @@ impl AIDialoguePlugin {
             ..Default::default()
         }
     }
+
+    pub fn with_config(&mut self, gather_config: AiContextGatherConfig) -> Self {
+        Self {
+            backend: self.backend.clone(),
+            builder: self.builder.clone(),
+            gather_config,
+        }
+    }
 }
 
 impl Default for AIDialoguePlugin {
@@ -208,7 +211,7 @@ impl Default for AIDialoguePlugin {
         Self {
             backend: Some(Arc::new(MockAi {})),
             builder: None,
-            gather_config: ContextGatherConfig {
+            gather_config: AiContextGatherConfig {
                 radius: 5.0,
                 max_docs: 8,
             },
@@ -384,7 +387,7 @@ fn handle_dialogue_requests(
 
         // Signal an on-demand gather for the requester; the exclusive gather system will run
         if let Some(gr) = gather_req.as_mut() {
-            gr.0 = Some(req.entity);
+            gr.request(req.entity);
         }
 
         // Build message vector: if context docs are available, include them as system messages

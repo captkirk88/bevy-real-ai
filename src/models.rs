@@ -101,7 +101,7 @@ impl ModelBuilder {
             let source = match self.file_source.clone() {
                 Some(path) => LlamaSource::new(path),
                 // Use Llama 3.2 1B as default - fast on CPU, good instruction following, less restrictive
-                None => LlamaSource::llama_3_2_1b_chat(),
+                None => LlamaSource::llama_3_2_3b_chat(),
             };
 
             let builder = Llama::builder().with_source(source).with_flash_attn(true);
@@ -110,19 +110,36 @@ impl ModelBuilder {
             if let Some(tx) = &self.progress_chan_tx {
                 let closure_tx = tx.clone();
                 match builder
-                    .build_with_loading_handler(move |handler| {
-                        match closure_tx.send(ModelDownloadProgress {
-                            state: if handler.progress() >= 100.0 {
-                                DownloadState::Completed
-                            } else {
-                                DownloadState::InProgress
-                            },
-                            message: format!("{:.0}", handler.progress()),
-                            progress: Some(handler.progress()),
-                        }) {
-                            Ok(_) => {}
-                            Err(e) => {
-                                eprintln!("Failed to send model download progress: {}", e);
+                    .build_with_loading_handler(move |handler| match handler.clone() {
+                        ModelLoadingProgress::Downloading { source, progress } => {
+                            let _ = progress;
+                            let message = format!(
+                                "Downloading model from {}: {:.0}%",
+                                source,
+                                handler.progress() * 100.0
+                            );
+                            match closure_tx.send(ModelDownloadProgress {
+                                state: DownloadState::InProgress,
+                                message,
+                                progress: Some(handler.progress()),
+                            }) {
+                                Ok(_) => {}
+                                Err(e) => {
+                                    eprintln!("Failed to send model download progress: {}", e);
+                                }
+                            }
+                        }
+                        ModelLoadingProgress::Loading { progress } => {
+                            let message = format!("Loading model: {:.0}%", progress * 100.0);
+                            match closure_tx.send(ModelDownloadProgress {
+                                state: DownloadState::InProgress,
+                                message,
+                                progress: Some(progress),
+                            }) {
+                                Ok(_) => {}
+                                Err(e) => {
+                                    eprintln!("Failed to send model loading progress: {}", e);
+                                }
                             }
                         }
                     })
@@ -184,7 +201,7 @@ impl ModelBuilder {
 pub struct AIModel {
     model: kalosm::language::BoxedChatModel,
     session: Option<kalosm::language::BoxedChatSession>,
-    include_default_prompt: Option<String>,
+    include_default_context: Option<String>,
     seed: Option<u64>,
 }
 
@@ -193,7 +210,7 @@ impl AIModel {
         Self {
             model: model,
             session: None,
-            include_default_prompt: Some(DEFAULT_SYSTEM_PROMPT.to_string()),
+            include_default_context: Some(DEFAULT_SYSTEM_CONTEXT.trim().to_string()),
             seed: None,
         }
     }
@@ -205,9 +222,9 @@ impl AIModel {
 
     pub fn include_default_context(mut self, include: bool) -> Self {
         if include {
-            self.include_default_prompt = Some(DEFAULT_SYSTEM_PROMPT.to_string());
+            self.include_default_context = Some(DEFAULT_SYSTEM_CONTEXT.trim().to_string());
         } else {
-            self.include_default_prompt = None;
+            self.include_default_context = None;
         };
         self
     }
@@ -246,7 +263,7 @@ impl LocalAi for AIModel {
             let mut chat = self.model.chat().with_session(chat_session.clone());
 
             // Combine system prompt with context information
-            let mut system_parts = if let Some(context) = &self.include_default_prompt {
+            let mut system_parts = if let Some(context) = &self.include_default_context {
                 vec![context.clone()]
             } else {
                 Vec::new()
@@ -281,11 +298,14 @@ impl LocalAi for AIModel {
             // Generate response with optional seed for deterministic output
             let response = if let Some(seed) = self.seed {
                 let sampler = GenerationParameters::default().with_seed(seed);
-                chat.add_message(&full_prompt).with_sampler(sampler).all_text().await
+                chat.add_message(&full_prompt)
+                    .with_sampler(sampler)
+                    .all_text()
+                    .await
             } else {
                 chat.add_message(&full_prompt).all_text().await
             };
-            
+
             let updated_session = match chat.session() {
                 Ok(s) => Some(s.clone()),
                 Err(_) => None,
@@ -302,12 +322,11 @@ impl LocalAi for AIModel {
     }
 }
 
-const DEFAULT_SYSTEM_PROMPT: &str =
-    "You are an NPC in a game. Answer ONLY using the facts given below.
+const DEFAULT_SYSTEM_CONTEXT: &str ="
+You are in a game world.
 
-RULES:
-- Use ONLY the information provided in the context
-- If the answer is not in the context, say: I don't know
-- Keep answers very short (1-2 sentences max)
-- Never make up information
-- Never explain or add details";
+Rules:
+- The context lists ALL people, places, items and information in this world
+- No other people, places, items or information exist beyond those listed
+- Do not add details, inferences, or explanations
+";

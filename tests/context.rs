@@ -1,7 +1,7 @@
 use bevy::prelude::*;
-use rustlicious::context::{ContextGatherRequest, AiSystemContextStore};
-use rustlicious::models::ModelBuilder;
-use rustlicious::prelude::*;
+use bevy_ai_dialogue::context::{ContextGatherRequest, AiSystemContextStore};
+use bevy_ai_dialogue::models::ModelBuilder;
+use bevy_ai_dialogue::prelude::*;
 
 #[test]
 fn gather_on_request_collects_nearby_entity_context() {
@@ -23,15 +23,13 @@ fn gather_on_request_collects_nearby_entity_context() {
     // This system only gathers context from NEARBY Character entities (within radius of requester)
     let mut store = app.world_mut().resource_mut::<AiSystemContextStore>();
     store.add_system(
-        |ai_entity: rustlicious::context::AiEntity,
-         characters: Query<(Entity, &Character, &Transform), With<rustlicious::context::AIAware>>| 
-         -> Option<rustlicious::rag::AiMessage> {
-            // Gather context only from nearby Character entities using the helper method
+        |ai_entity: bevy_ai_dialogue::context::AiEntity,
+         characters: Query<(Entity, &Character, &Transform), With<bevy_ai_dialogue::context::AIAware>>| 
+         -> Option<bevy_ai_dialogue::rag::AiMessage> {
+            // Gather context only from nearby Character entities using the nearby() method
+            let nearby_entities = ai_entity.collect_nearby();
             let summaries: Vec<String> = characters.iter()
-                .filter(|(ent, _, transform)| {
-                    // Use the is_nearby helper to check entity and distance
-                    ai_entity.is_nearby(*ent, transform.translation)
-                })
+                .filter(|(ent, _, _)| nearby_entities.contains(ent))
                 .map(|(_, character, _)| {
                     format!("{}, a npc, has {}", character.name, character.items.join(" and "))
                 })
@@ -40,7 +38,7 @@ fn gather_on_request_collects_nearby_entity_context() {
             if summaries.is_empty() {
                 None
             } else {
-                Some(rustlicious::rag::AiMessage::system(&summaries.join(". ")))
+                Some(bevy_ai_dialogue::rag::AiMessage::system(&summaries.join(". ")))
             }
         }
     );
@@ -48,28 +46,28 @@ fn gather_on_request_collects_nearby_entity_context() {
     // Spawn requester (with AI tag) and a nearby entity with complete character info
     let requester = app.world_mut().spawn((
         Transform::from_translation(Vec3::new(0.0,0.0,0.0)),
-        rustlicious::context::AI,
+        bevy_ai_dialogue::context::AI,
     )).id();
     let nearby = app.world_mut().spawn((
         Transform::from_translation(Vec3::new(1.0,0.0,0.0)), 
         Character { name: "Bob".into(), items: vec!["sword".into()] },
-        rustlicious::context::AIAware
+        bevy_ai_dialogue::context::AIAware
     )).id();
 
     eprintln!("Spawned requester: {:?}, nearby: {:?}", requester, nearby);
 
     // Request a gather for the requester entity
-    *app.world_mut().resource_mut::<ContextGatherRequest>() = ContextGatherRequest(Some(requester));
+    app.world_mut().resource_mut::<ContextGatherRequest>().request(requester);
 
     eprintln!("Requested gather for entity {:?}", requester);
 
     // Run the gather function directly (on-demand) so we avoid scheduling complexity in tests
-    rustlicious::context::gather_on_request_world(app.world_mut());
+    bevy_ai_dialogue::context::gather_on_request_world(app.world_mut());
 
     eprintln!("Gather completed");
 
     // The gather system should attach an `AiContext` component to the requester entity.
-    if let Some(ctx) = app.world().get::<rustlicious::rag::AiContext>(requester) {
+    if let Some(ctx) = app.world().get::<bevy_ai_dialogue::rag::AiContext>(requester) {
         let joined = ctx.messages().iter().map(|m| format!("{:?}", m)).collect::<Vec<_>>().join(" ").to_lowercase();
         eprintln!("AI context messages: {}", joined);
         assert!(joined.contains("bob"), "Context should contain 'bob', but got: {}", joined);
@@ -86,11 +84,11 @@ fn gather_on_request_collects_nearby_entity_context() {
     ));
 
     eprintln!("Added dialogue components to requester entity: {:?}", requester);
-    eprintln!("Request queue length before: {}", app.world().resource::<rustlicious::dialogue::DialogueRequestQueue>().len());
+    eprintln!("Request queue length before: {}", app.world().resource::<bevy_ai_dialogue::dialogue::DialogueRequestQueue>().len());
 
     // Ask a question that should trigger context gathering and include the sword information
     // Use more updates for the real Llama model which might be slower (30000 updates × 1ms = 30 seconds)
-    let resp = match rustlicious::test_helpers::ask_ai_and_wait_result(&mut app, requester, "Where is the sword?", 10000) {
+    let resp = match bevy_ai_dialogue::test_helpers::ask_ai_and_wait_result(&mut app, requester, "Where is the sword?", 10000) {
         Ok(r) => r,
         Err(e) => e,
     };

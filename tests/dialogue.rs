@@ -1,5 +1,5 @@
 use bevy::prelude::*;
-use rustlicious::prelude::*;
+use bevy_ai_dialogue::prelude::*;
 use std::sync::Arc;
 
 
@@ -16,7 +16,7 @@ fn preprogrammed_response_is_immediate() {
         .id();
 
     // Ask AI and wait for response using test helper
-    let resp = rustlicious::test_helpers::ask_ai_and_wait(&mut app, e, "ignored", 10).expect("expected response");
+    let resp = bevy_ai_dialogue::test_helpers::ask_ai_and_wait(&mut app, e, "ignored", 10).expect("expected response");
     assert_eq!(resp, "Hello, traveler");
 }
 
@@ -32,7 +32,7 @@ fn mock_ai_generates_response() {
         .id();
 
     // Ask AI and assert the response contains the expected text
-    let resp = rustlicious::test_helpers::ask_ai_and_wait(&mut app, e, "Say hi", 50).expect("expected response");
+    let resp = bevy_ai_dialogue::test_helpers::ask_ai_and_wait(&mut app, e, "Say hi", 50).expect("expected response");
 assert!(resp.contains("mock: Say hi"));
 }
 
@@ -40,11 +40,11 @@ assert!(resp.contains("mock: Say hi"));
 fn custom_backend_can_be_used() {
     struct TestAi;
     impl LocalAi for TestAi {
-        fn prompt(&self, messages: &[rustlicious::rag::AiMessage]) -> Result<String, String> {
+        fn prompt(&self, messages: &[bevy_ai_dialogue::rag::AiMessage]) -> Result<String, String> {
             // Return the first user-like message content when present
             for m in messages.iter() {
                 match m {
-                    rustlicious::rag::AiMessage::User(content) => {
+                    bevy_ai_dialogue::rag::AiMessage::User(content) => {
                         return Ok(format!("custom: {}", content));
                     }
                     _ => continue,
@@ -63,6 +63,6 @@ fn custom_backend_can_be_used() {
     let e = app.world_mut().spawn((Speaker::new("Eve", ""), DialogueReceiver::new(),)).id();
 
     // Ask and wait via helper
-    let resp = rustlicious::ask_ai_and_wait(&mut app, e, "Ping", 50).expect("expected response");
+    let resp = bevy_ai_dialogue::ask_ai_and_wait(&mut app, e, "Ping", 50).expect("expected response");
     assert_eq!(resp, "custom: Ping");
 }

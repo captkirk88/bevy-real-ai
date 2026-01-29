@@ -1,8 +1,8 @@
-# rustlicious 🔧
+# bevy_ai_dialogue 🔧
 
 Lightweight local-AI utilities and a Bevy dialogue plugin. Includes:
 
-- A simple `DialoguePlugin` for Bevy entities and background AI processing.
+- A simple `AiDialoguePlugin` for Bevy entities and background AI processing.
 - A `CandleBackend` wrapper around `candle-pipelines` for local LLM usage.
 - A tiny RAG (retrieval-augmented generation) helper and in-memory context store.
 

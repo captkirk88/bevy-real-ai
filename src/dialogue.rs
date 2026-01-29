@@ -9,20 +9,32 @@ pub struct ModelDownloadProgressEvent {
     pub model_name: String,
     pub state: crate::models::DownloadState,
     pub message: String,
-    pub progress: Option<f32>, // 0.0 to 1.0 for InProgress, None otherwise
+    pub progress: Option<f32>, // 0.0 to 100.0 for InProgress, None otherwise
 }
 
-/// Component to track an active model download and emit progress events
-#[derive(Component)]
-pub struct ModelDownloadTracker {
+/// Event fired when model loading completes (success or failure)
+#[derive(Event, Clone, Debug)]
+pub struct ModelLoadCompleteEvent {
     pub model_name: String,
-    pub progress_receiver: crossbeam_channel::Receiver<crate::models::ModelDownloadProgress>,
+    pub success: bool,
+    pub error_message: Option<String>,
 }
 
-/// Component to track completion of model loading
-#[derive(Component)]
-pub struct ModelLoadComplete {
+/// Resource to track pending model loads via channels
+#[derive(Resource, Default)]
+pub struct PendingModelLoads {
+    /// List of pending model load operations
+    pub loaders: Vec<PendingModelLoad>,
+}
+
+/// A pending model load operation with result and progress channels
+pub struct PendingModelLoad {
+    /// Name of the model being loaded
+    pub model_name: String,
+    /// Channel receiver for the built model result
     pub result_receiver: crossbeam_channel::Receiver<Result<Arc<dyn LocalAi>, String>>,
+    /// Optional channel receiver for download progress updates
+    pub progress_receiver: Option<crossbeam_channel::Receiver<crate::models::ModelDownloadProgress>>,
 }
 
 /// Public re-exports and types for users
@@ -81,7 +93,27 @@ use std::collections::VecDeque;
 /// Resource holding the queue of outgoing dialogue requests
 #[derive(Resource, Default)]
 pub struct DialogueRequestQueue {
-    pub queue: VecDeque<DialogueRequest>,
+    queue: VecDeque<DialogueRequest>,
+}
+
+impl DialogueRequestQueue {
+    pub fn new() -> Self {
+        Self {
+            queue: VecDeque::new(),
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.queue.len()
+    }
+
+    pub fn push(&mut self, request: DialogueRequest) {
+        self.queue.push_back(request);
+    }
+
+    pub fn pop(&mut self) -> Option<DialogueRequest> {
+        self.queue.pop_front()
+    }
 }
 
 /// Result of a prompt with session, containing the response and the updated session.
@@ -114,15 +146,23 @@ pub trait LocalAi: Send + Sync + 'static {
 /// A handle resource that holds the backend and a channel for responses.
 #[derive(Resource)]
 pub struct LocalAiHandle {
-    pub backend: Arc<dyn LocalAi>,
+    /// The AI backend. None until a model is loaded when using async loading.
+    pub backend: Option<Arc<dyn LocalAi>>,
     pub tx: Sender<DialogueResponse>,
     pub rx: Receiver<DialogueResponse>,
 }
 
 impl LocalAiHandle {
+    /// Create a new handle with a backend ready to use.
     pub fn new(backend: Arc<dyn LocalAi>) -> Self {
         let (tx, rx) = unbounded();
-        Self { backend, tx, rx }
+        Self { backend: Some(backend), tx, rx }
+    }
+
+    /// Create a new handle without a backend (for async loading).
+    pub fn new_empty() -> Self {
+        let (tx, rx) = unbounded();
+        Self { backend: None, tx, rx }
     }
 }
 
@@ -183,118 +223,112 @@ impl Plugin for AIDialoguePlugin {
             return;
         }
 
-        let backend = if let Some(builder) = &self.builder {
-            match builder.build_chat() {
-                Ok(arc_model) => arc_model,
-                Err(e) => {
-                    eprintln!("AIDialoguePlugin: Failed to build model from builder: {}. Falling back to MockAi.", e);
-                    Arc::new(MockAi {})
-                }
-            }
+        // Determine the initial backend:
+        // - If a builder is provided, start with no backend (async load happens in Startup)
+        // - If a direct backend is provided, use it immediately
+        // - Otherwise fall back to MockAi
+        let ai_handle = if self.builder.is_some() {
+            // No backend yet - model will be loaded async in Startup
+            LocalAiHandle::new_empty()
+        } else if let Some(backend) = &self.backend {
+            LocalAiHandle::new(backend.clone())
         } else {
-            self.backend.clone().unwrap_or_else(|| {
-                eprintln!("AIDialoguePlugin: No backend or builder provided. Using MockAi.");
-                Arc::new(MockAi {})
-            })
+            eprintln!("AIDialoguePlugin: No backend or builder provided. Using MockAi.");
+            LocalAiHandle::new(Arc::new(MockAi {}))
         };
         
-        // Insert the provided backend into a LocalAiHandle and add the request queue and systems.
-        app.insert_resource(LocalAiHandle::new(backend))
+        // Insert the AI handle and other resources.
+        app.insert_resource(ai_handle)
             .insert_resource(DialogueRequestQueue::default())
             .insert_resource(AiSystemContextStore::new())
             .insert_resource(self.gather_config.clone())
-            .insert_resource(ContextGatherRequest::default());
+            .insert_resource(ContextGatherRequest::default())
+            .insert_resource(PendingModelLoads::default());
 
         // Schedule dialogue request handling first, then gather (which may have been triggered by dialogue),
         // then response polling. This ensures context is gathered in the same frame as the request is made.
         app.add_systems(
             Update,
-            (handle_dialogue_requests, crate::context::gather_on_request_world, poll_responses_receiver, poll_model_download_progress, apply_loaded_model)
+            (handle_dialogue_requests, crate::context::gather_on_request_world, poll_responses_receiver, poll_pending_model_loads)
                 .chain(),
         );
 
-        // Register observer for model download progress events
-        app.add_observer(handle_model_download_progress);
-
-        // If a builder was provided, spawn the model loading task
+        // If a builder was provided, spawn the model loading task asynchronously
         if let Some(builder) = self.builder.clone() {
-            app.add_systems(Startup, move |commands: Commands| {
-                spawn_model_load_tracker(commands, "Model".to_string(), builder.clone());
+            app.add_systems(Startup, move |mut pending: ResMut<PendingModelLoads>| {
+                start_model_load(&mut pending, "Model".to_string(), builder.clone());
             });
+        }
+    }
+
+    fn cleanup(&self, app: &mut App) {
+        // Clear pending model loads to stop polling for results
+        // Resources are dropped naturally when the App is dropped
+        if let Some(mut pending) = app.world_mut().get_resource_mut::<PendingModelLoads>() {
+            pending.loaders.clear();
         }
     }
 }
 
-/// System that polls for completed model loads and updates LocalAiHandle
-fn apply_loaded_model(
-    mut query: Query<(Entity, &ModelLoadComplete)>,
+/// System that polls for completed model loads and triggers events
+fn poll_pending_model_loads(
+    mut pending: ResMut<PendingModelLoads>,
     mut ai_handle: ResMut<LocalAiHandle>,
     mut commands: Commands,
 ) {
-    for (entity, loader) in query.iter_mut() {
+    // Poll progress receivers and trigger progress events
+    for loader in pending.loaders.iter() {
+        if let Some(ref progress_rx) = loader.progress_receiver {
+            while let Ok(progress) = progress_rx.try_recv() {
+                commands.trigger(ModelDownloadProgressEvent {
+                    model_name: loader.model_name.clone(),
+                    state: progress.state,
+                    message: progress.message,
+                    progress: progress.progress,
+                });
+            }
+        }
+    }
+
+    // Poll result receivers and trigger completion events
+    let mut completed_indices = Vec::new();
+    for (idx, loader) in pending.loaders.iter().enumerate() {
         if let Ok(result) = loader.result_receiver.try_recv() {
             match result {
                 Ok(new_backend) => {
-                    eprintln!("Model loading complete, updating backend");
-                    ai_handle.backend = new_backend;
-                    commands.entity(entity).despawn();
+                    ai_handle.backend = Some(new_backend);
+                    commands.trigger(ModelLoadCompleteEvent {
+                        model_name: loader.model_name.clone(),
+                        success: true,
+                        error_message: None,
+                    });
                 }
                 Err(e) => {
-                    eprintln!("Model loading failed: {}", e);
-                    commands.entity(entity).despawn();
+                    commands.trigger(ModelLoadCompleteEvent {
+                        model_name: loader.model_name.clone(),
+                        success: false,
+                        error_message: Some(e),
+                    });
                 }
             }
+            completed_indices.push(idx);
         }
     }
-}
 
-/// System that polls model download progress and triggers events
-fn poll_model_download_progress(
-    query: Query<&ModelDownloadTracker>,
-    mut commands: Commands,
-) {
-    for tracker in query.iter() {
-        while let Ok(progress) = tracker.progress_receiver.try_recv() {
-            commands.trigger(ModelDownloadProgressEvent {
-                model_name: tracker.model_name.clone(),
-                state: progress.state,
-                message: progress.message,
-                progress: progress.progress,
-            });
-        }
+    // Remove completed loaders (in reverse order to preserve indices)
+    for idx in completed_indices.into_iter().rev() {
+        pending.loaders.remove(idx);
     }
 }
 
 
-/// Observer that handles model download progress events and logs them
-fn handle_model_download_progress(
-    trigger: On<ModelDownloadProgressEvent>,
-) {
-    let event = trigger.event();
-    match event.state {
-        crate::models::DownloadState::InProgress => {
-            if let Some(p) = event.progress {
-                eprintln!("[{}] Downloading... {:.1}% - {}", event.model_name, p, event.message);
-            } else {
-                eprintln!("[{}] {}", event.model_name, event.message);
-            }
-        }
-        crate::models::DownloadState::Completed => {
-            eprintln!("[{}] ✓ Download completed", event.model_name);
-        }
-        crate::models::DownloadState::Error => {
-            eprintln!("[{}] ✗ Download error: {}", event.model_name, event.message);
-        }
-    }
-}
-
-/// Helper to build a model and track its progress with component spawning
-/// Use this in a system to load a model asynchronously while tracking progress
-pub fn spawn_model_load_tracker(
-    mut commands: Commands,
+/// Helper to build a model and track its progress using the resource-based system.
+/// Call this from a startup system or any system that needs to load a model asynchronously.
+pub fn start_model_load(
+    pending: &mut ResMut<PendingModelLoads>,
     model_name: String,
     mut builder: crate::models::ModelBuilder,
-) -> Entity {
+) {
     // Extract progress receiver before building
     let progress_receiver = builder.take_progress_receiver();
 
@@ -313,27 +347,17 @@ pub fn spawn_model_load_tracker(
         }
     });
 
-    // Spawn an entity with both progress and result trackers
-    let entity = commands
-        .spawn_empty()
-        .insert(ModelLoadComplete {
-            result_receiver: result_rx,
-        })
-        .id();
-
-    if let Some(rx) = progress_receiver {
-        // Add progress tracker if progress reporting was enabled
-        commands.entity(entity).insert(ModelDownloadTracker {
-            model_name: model_name.clone(),
-            progress_receiver: rx,
-        });
-    }
-
-    entity
+    // Add to pending model loads resource
+    pending.loaders.push(PendingModelLoad {
+        model_name,
+        result_receiver: result_rx,
+        progress_receiver,
+    });
 }
 
 
 /// System that handles outgoing requests: if NPC has preprogrammed response, respond immediately; else, spawn a thread to call the backend and send result to the response channel.
+/// Requests are kept in the queue until the model is loaded.
 fn handle_dialogue_requests(
     mut queue: ResMut<DialogueRequestQueue>,
     ai_handle: Res<LocalAiHandle>,
@@ -341,7 +365,12 @@ fn handle_dialogue_requests(
     mut gather_req: Option<ResMut<crate::context::ContextGatherRequest>>,
     ctx_query: Query<&crate::rag::AiContext>,
 ) {
-    while let Some(req) = queue.queue.pop_front() {
+    // Get the backend, or return early if not loaded yet (requests stay queued)
+    let Some(backend) = &ai_handle.backend else {
+        return;
+    };
+
+    while let Some(req) = queue.pop() {
         // If receiver has a preprogrammed response, short-circuit and send directly
         if let Ok(receiver) = query.get(req.entity) {
             if let Some(pre) = &receiver.preprogrammed {
@@ -366,7 +395,7 @@ fn handle_dialogue_requests(
         messages.push(AiMessage::user(req.prompt.as_str()));
 
         // Call backend on a background thread with message-style prompt and send result to the response channel
-        let backend = ai_handle.backend.clone();
+        let backend = backend.clone();
         let tx = ai_handle.tx.clone();
         let msgs = messages.clone();
         let entity = req.entity;

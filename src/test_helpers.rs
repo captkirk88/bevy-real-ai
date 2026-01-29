@@ -12,7 +12,7 @@ use std::time::Duration;
 pub fn ask_ai_and_wait(app: &mut App, entity: Entity, prompt: &str, max_updates: usize) -> Option<String> {
     // Push request onto the request queue
     let mut req_queue = app.world_mut().resource_mut::<DialogueRequestQueue>();
-    req_queue.queue.push_back(DialogueRequest { entity, prompt: prompt.to_string() });
+    req_queue.push(DialogueRequest { entity, prompt: prompt.to_string() });
 
     for _ in 0..max_updates {
         app.update();

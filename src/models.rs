@@ -77,7 +77,7 @@ impl ModelBuilder {
         self
     }
 
-    /// Enable progress tracking for model downloads. Returns self for chaining.
+    /// Enable progress tracking for model downloads.
     ///
     /// If not called, progress updates will be viewed on the terminal only.
     pub fn with_progress(mut self) -> Self {

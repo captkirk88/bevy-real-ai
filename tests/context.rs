@@ -86,7 +86,7 @@ fn gather_on_request_collects_nearby_entity_context() {
     ));
 
     eprintln!("Added dialogue components to requester entity: {:?}", requester);
-    eprintln!("Request queue length before: {}", app.world().resource::<rustlicious::dialogue::DialogueRequestQueue>().queue.len());
+    eprintln!("Request queue length before: {}", app.world().resource::<rustlicious::dialogue::DialogueRequestQueue>().len());
 
     // Ask a question that should trigger context gathering and include the sword information
     // Use more updates for the real Llama model which might be slower (30000 updates × 1ms = 30 seconds)

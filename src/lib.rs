@@ -13,7 +13,7 @@ pub use crate::test_helpers::{ask_ai_and_wait, assert_ai_response};
 pub mod context;
 
 pub mod prelude {
-    pub use crate::dialogue::{AIDialoguePlugin, Speaker, DialogueReceiver, DialogueRequest, DialogueResponse, LocalAiHandle, DialogueRequestQueue, LocalAi, ModelDownloadProgressEvent, ModelDownloadTracker, ModelLoadComplete, spawn_model_load_tracker};
+    pub use crate::dialogue::{AIDialoguePlugin, Speaker, DialogueReceiver, DialogueRequest, DialogueResponse, LocalAiHandle, DialogueRequestQueue, LocalAi, ModelDownloadProgressEvent, ModelLoadCompleteEvent, PendingModelLoads, PendingModelLoad, start_model_load};
     pub use crate::rag::{AiMessage, AiContext};
     pub use crate::context::{AiSystemContextStore, ContextGatherConfig, AiEntity, AI, AIAware};
 }

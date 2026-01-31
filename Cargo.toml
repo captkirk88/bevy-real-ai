@@ -19,21 +19,17 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 futures-lite = "2.6"
 crossbeam-channel = "0.5"
-kalosm = { version = "0.4", features = ["language"], optional = true }
+kalosm = { version = "0.4", features = ["language", "openai"], optional = true }
 tokio = { version = "1.49", features = ["full"] }
-
+zeroize ={ version = "1.8" }
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
-kalosm = { version = "0.4", features = ["language", "metal"], optional = true }
-
-[target.'cfg(not(any(target_os = "macos", target_os = "ios")))'.dependencies]
-kalosm = { version = "0.4", features = ["language"], optional = true }
+kalosm = { version = "0.4", features = ["language", "openai", "metal"], optional = true }
 
 [features]
 default = ["kalosm"]
 default-test = ["default", "tempfile"]
 gpu = ["kalosm/metal", "kalosm/cuda"]
 cuda = ["kalosm/cuda"]
-metal = ["kalosm/metal"]
 
 
 # Enable a small amount of optimization in the dev profile.

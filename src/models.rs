@@ -10,7 +10,12 @@ use crate::rag::AiMessage;
 
 /// Global tokio runtime for async operations - creating a runtime per call is very expensive
 static TOKIO_RUNTIME: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
-    tokio::runtime::Runtime::new().expect("Failed to create global tokio runtime")
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .event_interval(15)
+        .thread_name("ai-runtime-worker")
+        .build()
+        .expect("Failed to create global tokio runtime")
 });
 
 /// Represents the state of a model download operation
@@ -29,9 +34,25 @@ pub struct ModelDownloadProgress {
     pub progress: Option<f32>, // 0.0 to 1.0 for InProgress, None otherwise
 }
 
+pub type SecureString = zeroize::Zeroizing<String>;
+
+#[derive(Clone)]
+pub enum ModelType {
+    Llama,
+    GPT(SecureString),
+    Phi,
+}
+
+enum ModelSource {
+    Llama(Llama),
+    GPT(OpenAICompatibleChatModel),
+    Phi(Llama),
+}
+
 #[derive(Clone)]
 pub struct ModelBuilder {
-    file_source: Option<FileSource>,
+    model_type: ModelType,
+    model_file_source: Option<FileSource>,
     progress_chan_tx: Option<crossbeam_channel::Sender<ModelDownloadProgress>>,
     progress_chan_rx: Option<crossbeam_channel::Receiver<ModelDownloadProgress>>,
     include_default_context: bool,
@@ -39,9 +60,17 @@ pub struct ModelBuilder {
 }
 
 impl ModelBuilder {
+
+    /// Create a new ModelBuilder with the default model type (Llama)
     pub fn new() -> Self {
+        Self::new_with(ModelType::Llama)
+    }
+
+    /// Create a new ModelBuilder with the specified model type
+    pub fn new_with(model_type: ModelType) -> Self {
         Self {
-            file_source: None,
+            model_type,
+            model_file_source: None,
             progress_chan_tx: None,
             progress_chan_rx: None,
             include_default_context: true,
@@ -63,17 +92,19 @@ impl ModelBuilder {
 
     /// Specify a local file path as the source for the AI model. Recommend .gguf files.
     pub fn with_local(mut self, path: PathBuf) -> Self {
-        self.file_source = Some(FileSource::Local(path));
+        self.model_file_source = Some(FileSource::Local(path));
+        self.model_type = ModelType::Llama; // Default to Llama for local files
         self
     }
 
     /// Specify a HuggingFace model as the source for the AI model.
     pub fn with_huggingface(mut self, repo_id: &str, revision: &str, file: &str) -> Self {
-        self.file_source = Some(FileSource::HuggingFace {
+        self.model_file_source = Some(FileSource::HuggingFace {
             model_id: repo_id.to_string(),
             revision: revision.to_string(),
             file: file.to_string(),
         });
+        self.model_type = ModelType::Llama; // Default to Llama for HuggingFace
         self
     }
 
@@ -95,98 +126,115 @@ impl ModelBuilder {
         self.progress_chan_rx.take()
     }
 
+    fn model_loading_handler(
+        progress_chan_tx: Option<crossbeam_channel::Sender<ModelDownloadProgress>>,
+        handler: ModelLoadingProgress,
+    ) {
+        let message = match handler.clone() {
+            ModelLoadingProgress::Downloading { source, .. } => {
+                format!(
+                    "Downloading model from {}: {:.0}%",
+                    source,
+                    handler.progress() * 100.0
+                )
+            }
+            ModelLoadingProgress::Loading { progress } => {
+                format!("Loading model: {:.0}%", progress * 100.0)
+            }
+        };
+
+        let progress_value = handler.progress();
+
+        match progress_chan_tx {
+            Some(tx) => {
+                match tx.send(ModelDownloadProgress {
+                    state: DownloadState::InProgress,
+                    message,
+                    progress: Some(progress_value),
+                }) {
+                    Ok(_) => {}
+                    Err(e) => {
+                        eprintln!("Failed to send model loading progress: {}", e);
+                    }
+                }
+            }
+            None => {
+                // Print progress to terminal, reusing the same line
+                print!("\r{}", message);
+                use std::io::{self, Write};
+                let _ = io::stdout().flush();
+            }
+        }
+    }
+
     pub fn build_chat(&self) -> Result<Arc<dyn LocalAi>, String> {
         // Use global runtime instead of creating a new one
         TOKIO_RUNTIME.block_on(async {
-            let source = match self.file_source.clone() {
-                Some(path) => LlamaSource::new(path),
-                // Use Llama 3.2 1B as default - fast on CPU, good instruction following, less restrictive
-                None => LlamaSource::llama_3_2_3b_chat(),
+            let source = match self.model_type.clone() {
+                ModelType::Llama => match &self.model_file_source {
+                    Some(s) => {
+                        let progress_tx = self.progress_chan_tx.clone();
+                        let model = Llama::builder()
+                            .with_source(LlamaSource::new(s.clone()))
+                            .build_with_loading_handler(move |handler| {
+                                Self::model_loading_handler(progress_tx.clone(), handler.clone());
+                            })
+                            .await
+                            .map_err(|e| format!("Failed to create Llama model source: {}", e))?;
+                        ModelSource::Llama(model)
+                    }
+                    None => {
+                        let progress_tx = self.progress_chan_tx.clone();
+                        let model = Llama::builder()
+                            .with_source(LlamaSource::llama_3_2_3b_chat())
+                            .build_with_loading_handler(move |handler| {
+                                Self::model_loading_handler(progress_tx.clone(), handler.clone());
+                            })
+                            .await
+                            .map_err(|e| format!("Failed to create Llama model source: {}", e))?;
+                        ModelSource::Llama(model)
+                    }
+                },
+                ModelType::GPT(api_key) => {
+                    let model = OpenAICompatibleChatModelBuilder::new()
+                        .with_gpt_4o_mini()
+                        .with_client(OpenAICompatibleClient::new().with_api_key(api_key.as_str()))
+                        .build();
+                    ModelSource::GPT(model)
+                },
+                ModelType::Phi => match &self.model_file_source {
+                    Some(s) => {
+                        let progress_tx = self.progress_chan_tx.clone();
+                        let model = Llama::builder()
+                            .with_source(LlamaSource::new(s.clone()))
+                            .build_with_loading_handler(move |handler| {
+                                Self::model_loading_handler(progress_tx.clone(), handler.clone());
+                            })
+                            .await
+                            .map_err(|e| format!("Failed to create Phi model source: {}", e))?;
+                        ModelSource::Phi(model)
+                    }
+                    None => {
+                        let progress_tx = self.progress_chan_tx.clone();
+                        let model = Llama::builder()
+                            .with_source(LlamaSource::phi_3_1_mini_4k_instruct())
+                            .build_with_loading_handler(move |handler| {
+                                Self::model_loading_handler(progress_tx.clone(), handler.clone());
+                            })
+                            .await
+                            .map_err(|e| format!("Failed to create Phi model source: {}", e))?;
+                        ModelSource::Phi(model)
+                    }
+                },
             };
 
-            let builder = Llama::builder().with_source(source).with_flash_attn(true);
+            let model = match source {
+                ModelSource::Llama(m) => m.boxed_chat_model(),
+                ModelSource::GPT(m) => m.boxed_chat_model(),
+                ModelSource::Phi(m) => m.boxed_chat_model(),
+            };
 
-            // If a progress channel is provided, use build_with_loading_handler
-            if let Some(tx) = &self.progress_chan_tx {
-                let closure_tx = tx.clone();
-                match builder
-                    .build_with_loading_handler(move |handler| match handler.clone() {
-                        ModelLoadingProgress::Downloading { source, progress } => {
-                            let _ = progress;
-                            let message = format!(
-                                "Downloading model from {}: {:.0}%",
-                                source,
-                                handler.progress() * 100.0
-                            );
-                            match closure_tx.send(ModelDownloadProgress {
-                                state: DownloadState::InProgress,
-                                message,
-                                progress: Some(handler.progress()),
-                            }) {
-                                Ok(_) => {}
-                                Err(e) => {
-                                    eprintln!("Failed to send model download progress: {}", e);
-                                }
-                            }
-                        }
-                        ModelLoadingProgress::Loading { progress } => {
-                            let message = format!("Loading model: {:.0}%", progress * 100.0);
-                            match closure_tx.send(ModelDownloadProgress {
-                                state: DownloadState::InProgress,
-                                message,
-                                progress: Some(progress),
-                            }) {
-                                Ok(_) => {}
-                                Err(e) => {
-                                    eprintln!("Failed to send model loading progress: {}", e);
-                                }
-                            }
-                        }
-                    })
-                    .await
-                {
-                    Ok(m) => {
-                        let mut model = AIModel::new(m.boxed_chat_model())
-                            .include_default_context(self.include_default_context);
-                        if let Some(seed) = self.seed {
-                            model = model.with_seed(seed);
-                        }
-                        let arc_model: Arc<dyn LocalAi> = Arc::new(model);
-                        return Ok(arc_model);
-                    }
-                    Err(e) => {
-                        if let Some(tx) = &self.progress_chan_tx {
-                            let _ = tx.send(ModelDownloadProgress {
-                                state: DownloadState::Error,
-                                message: format!("Failed to load Llama model: {}", e),
-                                progress: None,
-                            });
-                        }
-                        return Err(format!("Failed to load Llama model: {}", e));
-                    }
-                }
-            }
-
-            let model = builder.build().await.map_err(|e| {
-                if let Some(tx) = &self.progress_chan_tx {
-                    let _ = tx.send(ModelDownloadProgress {
-                        state: DownloadState::Error,
-                        message: format!("Failed to load AI model: {}", e),
-                        progress: None,
-                    });
-                }
-                format!("Failed to load AI model: {}", e)
-            })?;
-
-            if let Some(tx) = &self.progress_chan_tx {
-                let _ = tx.send(ModelDownloadProgress {
-                    state: DownloadState::Completed,
-                    message: "Model loaded successfully".to_string(),
-                    progress: Some(1.0),
-                });
-            }
-
-            let mut ai_model = AIModel::new(model.boxed_chat_model())
+            let mut ai_model = AIModel::new(model)
                 .include_default_context(self.include_default_context);
             if let Some(seed) = self.seed {
                 ai_model = ai_model.with_seed(seed);
@@ -226,6 +274,11 @@ impl AIModel {
         } else {
             self.include_default_context = None;
         };
+        self
+    }
+
+    pub fn with_default_context(mut self, context: &str) -> Self {
+        self.include_default_context = Some(context.to_string());
         self
     }
 
@@ -316,13 +369,13 @@ impl LocalAi for AIModel {
             }
             Ok(crate::dialogue::PromptResult {
                 response,
-                session: updated_session.unwrap_or(chat_session),
+                session: updated_session.or(Some(chat_session)),
             })
         })
     }
 }
 
-const DEFAULT_SYSTEM_CONTEXT: &str ="
+const DEFAULT_SYSTEM_CONTEXT: &str = "
 You are in a game world.
 
 Rules:

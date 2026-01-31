@@ -119,7 +119,7 @@ impl DialogueRequestQueue {
 /// Result of a prompt with session, containing the response and the updated session.
 pub struct PromptResult {
     pub response: String,
-    pub session: kalosm::language::BoxedChatSession,
+    pub session: Option<kalosm::language::BoxedChatSession>,
 }
 
 /// Trait to abstract local AI backends. Implementors should be quick to return or be used from a background thread.
@@ -137,9 +137,13 @@ pub trait LocalAi: Send + Sync + 'static {
         _session: Option<kalosm::language::BoxedChatSession>,
     ) -> Result<PromptResult, String> {
         // Default implementation ignores session and just calls prompt
-        let _ = self.prompt(messages)?;
-        // Return a dummy error since we can't create a session without the model
-        Err("prompt_with_session not supported by this backend".to_string())
+        match self.prompt(messages) {
+            Ok(response) => Ok(PromptResult {
+                response,
+                session: None,
+            }),
+            Err(e) => Err(e),
+        }
     }
 }
 

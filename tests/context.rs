@@ -6,7 +6,7 @@ use bevy_ai_dialogue::prelude::*;
 #[test]
 fn gather_on_request_collects_nearby_entity_context() {
     let mut app = App::new();
-    let backend = ModelBuilder::new()
+    let backend = ModelBuilder::new_with(ModelType::Llama)
         .with_seed(42)  // Use fixed seed for deterministic test output
         .build_chat()
         .expect("failed to build model");

@@ -239,10 +239,8 @@ impl AiSystemContextStore {
     }
 }
 
-/// On-demand gather system: when `ContextGatherRequest` contains pending entities, run all context-gathering
-/// systems from `AiSystemContextStore` in order for the first pending entity. Systems read AiCurrentContextEntity 
-/// resource to know which entity they're gathering context for. Returned messages are collected and added to the 
-/// entity's `AiContext`. Processes one entity per call (one per world update).
+/// Process one on-demand context gather request from the queue.
+/// This function should be run as a Bevy system each frame.
 pub fn gather_on_request_world(world: &mut World) {
     // Pop the next entity from the queue
     let ent_opt = {
@@ -270,11 +268,10 @@ pub fn gather_on_request_world(world: &mut World) {
 
     // Run each system with () input - systems read AiCurrentContextEntity from world
     for i in 0..num_systems {
-        if let Some(mut store) = world.get_resource_mut::<AiSystemContextStore>() {
+        world.resource_scope::<AiSystemContextStore, ()>(|world, mut store| {
             if i < store.systems.len() {
                 // Take ownership of the system
                 let mut system = store.systems.remove(i);
-                drop(store); // Release the borrow
 
                 // Initialize the system
                 system.initialize(world);
@@ -290,12 +287,9 @@ pub fn gather_on_request_world(world: &mut World) {
                     messages.push(msg);
                 }
 
-                // Put the system back
-                if let Some(mut store) = world.get_resource_mut::<AiSystemContextStore>() {
-                    store.systems.insert(i, system);
-                }
+                store.systems.insert(i, system);
             }
-        }
+        });
     }
 
     // Remove the temporary resource

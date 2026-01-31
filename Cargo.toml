@@ -22,6 +22,7 @@ crossbeam-channel = "0.5"
 kalosm = { version = "0.4", features = ["language", "openai"], optional = true }
 tokio = { version = "1.49", features = ["full"] }
 zeroize ={ version = "1.8" }
+console = "0.16"
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
 kalosm = { version = "0.4", features = ["language", "openai", "metal"], optional = true }
 

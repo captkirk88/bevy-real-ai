@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::LazyLock;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crossbeam_channel;
 use kalosm::language::*;
@@ -12,7 +14,7 @@ use crate::rag::AiMessage;
 static TOKIO_RUNTIME: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
-        .event_interval(15)
+        .event_interval(31)
         .thread_name("ai-runtime-worker")
         .build()
         .expect("Failed to create global tokio runtime")
@@ -38,8 +40,11 @@ pub type SecureString = zeroize::Zeroizing<String>;
 
 #[derive(Clone)]
 pub enum ModelType {
+    /// Llama model or source (e.g., local file or HuggingFace)
     Llama,
+    /// OpenAI GPT model with API key
     GPT(SecureString),
+    /// Phi3 model
     Phi,
 }
 
@@ -60,7 +65,6 @@ pub struct ModelBuilder {
 }
 
 impl ModelBuilder {
-
     /// Create a new ModelBuilder with the default model type (Llama)
     pub fn new() -> Self {
         Self::new_with(ModelType::Llama)
@@ -132,18 +136,14 @@ impl ModelBuilder {
     ) {
         let message = match handler.clone() {
             ModelLoadingProgress::Downloading { source, .. } => {
-                format!(
-                    "Downloading model from {}: {:.0}%",
-                    source,
-                    handler.progress() * 100.0
-                )
+                format!("{}", source,)
             }
             ModelLoadingProgress::Loading { progress } => {
                 format!("Loading model: {:.0}%", progress * 100.0)
             }
         };
 
-        let progress_value = handler.progress();
+        let progress_value = handler.progress() * 100.0;
 
         match progress_chan_tx {
             Some(tx) => {
@@ -159,10 +159,71 @@ impl ModelBuilder {
                 }
             }
             None => {
-                // Print progress to terminal, reusing the same line
-                print!("\r{}", message);
-                use std::io::{self, Write};
-                let _ = io::stdout().flush();
+                // Mutex to serialize terminal writes so updates don't interleave
+                static PROGRESS_LOCK: Mutex<()> = Mutex::new(());
+
+                // Length of the last single-line progress output (for padding when shorter updates occur)
+                static PREV_LINE_LEN: AtomicUsize = AtomicUsize::new(0);
+
+                // Print message on one line and percentage on the next, updating both in-place.
+                use console::Term;
+
+                let term = Term::stdout();
+
+                // Prepare both lines and truncate to terminal width to avoid wrapping
+                let cols = term.size().1 as usize; // Term::size returns (rows, cols)
+                let max_width = cols.saturating_sub(1).max(20);
+
+                // Message line
+                let msg_line = if message.chars().count() > max_width {
+                    let mut s = message.chars().take(max_width - 1).collect::<String>();
+                    s.push('…');
+                    s
+                } else {
+                    message.clone()
+                };
+
+                // Percentage line
+                let pct = format!("({:.0}%)", progress_value);
+                let pct_line = if pct.chars().count() > max_width {
+                    let mut s = pct.chars().take(max_width - 1).collect::<String>();
+                    s.push_str("...");
+                    s
+                } else {
+                    pct
+                };
+
+                // Serialize writes to avoid interleaving
+                let _guard = PROGRESS_LOCK.lock().unwrap();
+
+                use std::io::Write;
+
+                // Single-line: "<message> <percent>" and carriage-return overwrite
+                let combined = format!("{} {}", msg_line, pct_line);
+                let len = combined.chars().count();
+
+                // Serialize writes
+                let mut handle = Term::stdout();
+                let prev = PREV_LINE_LEN.load(Ordering::SeqCst);
+
+                // Write carriage return then combined content
+                let _ = write!(handle, "\r{}", combined);
+
+                // If we shortened, pad with spaces to erase leftover chars
+                if len < prev {
+                    let _ = write!(handle, "{}", " ".repeat(prev - len));
+                    // Re-write to move cursor back to line start with content
+                    let _ = write!(handle, "\r{}", combined);
+                }
+
+                let _ = handle.flush();
+                PREV_LINE_LEN.store(len, Ordering::SeqCst);
+
+                // On completion, print newline and reset length tracker
+                if progress_value >= 100.0 {
+                    let _ = writeln!(handle, "");
+                    PREV_LINE_LEN.store(0, Ordering::SeqCst);
+                }
             }
         }
     }
@@ -198,10 +259,12 @@ impl ModelBuilder {
                 ModelType::GPT(api_key) => {
                     let model = OpenAICompatibleChatModelBuilder::new()
                         .with_gpt_4o_mini()
-                        .with_client(OpenAICompatibleClient::new().with_api_key(api_key.as_str()))
+                        .with_client(
+                            OpenAICompatibleClient::new().with_api_key(api_key.to_string()),
+                        )
                         .build();
                     ModelSource::GPT(model)
-                },
+                }
                 ModelType::Phi => match &self.model_file_source {
                     Some(s) => {
                         let progress_tx = self.progress_chan_tx.clone();
@@ -234,8 +297,8 @@ impl ModelBuilder {
                 ModelSource::Phi(m) => m.boxed_chat_model(),
             };
 
-            let mut ai_model = AIModel::new(model)
-                .include_default_context(self.include_default_context);
+            let mut ai_model =
+                AIModel::new(model).include_default_context(self.include_default_context);
             if let Some(seed) = self.seed {
                 ai_model = ai_model.with_seed(seed);
             }

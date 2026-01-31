@@ -13,9 +13,9 @@
 
 use bevy::ecs::observer::On;
 use bevy::prelude::*;
-use bevy_ai_dialogue::context::{AiSystemContextStore, ContextGatherRequest, AI, AIAware, AiEntity};
-use bevy_ai_dialogue::models::{DownloadState, ModelBuilder};
-use bevy_ai_dialogue::prelude::*;
+use bevy_real_ai::context::{AiSystemContextStore, ContextGatherRequest, AI, AIAware, AiEntity};
+use bevy_real_ai::models::{DownloadState, AiModelBuilder};
+use bevy_real_ai::prelude::*;
 
 /// Questions available for the player to ask (label, prompt)
 static QUESTIONS: &[(&str, &str)] = &[
@@ -28,7 +28,7 @@ fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
         .add_plugins(AIDialoguePlugin::with_builder(
-            ModelBuilder::new_with(ModelType::Llama)
+            AiModelBuilder::new_with(ModelType::Llama)
                 .with_seed(42) // Optional: use fixed seed for consistent responses
                 .with_progress(), // Enable progress tracking for download UI
         ).with_config(AiContextGatherConfig::default().with_radius(50.0)))
@@ -212,7 +212,7 @@ fn setup_world(mut commands: Commands, mut store: ResMut<AiSystemContextStore>) 
 fn gather_npc_context(
     ai_entity: AiEntity,
     npcs: Query<(Entity, &Npc, &Inventory, &Transform), With<AIAware>>,
-) -> Option<bevy_ai_dialogue::rag::AiMessage> {
+) -> Option<bevy_real_ai::rag::AiMessage> {
     let nearby_entities = ai_entity.collect_nearby();
     
     let summaries: Vec<String> = npcs
@@ -231,7 +231,7 @@ fn gather_npc_context(
     if summaries.is_empty() {
         None
     } else {
-        Some(bevy_ai_dialogue::rag::AiMessage::system(&summaries.join("\n")))
+        Some(bevy_real_ai::rag::AiMessage::system(&summaries.join("\n")))
     }
 }
 
@@ -240,7 +240,7 @@ fn handle_input(
     keyboard: Res<ButtonInput<KeyCode>>,
     player_query: Query<Entity, With<Player>>,
     mut context_request: ResMut<ContextGatherRequest>,
-    mut request_queue: ResMut<bevy_ai_dialogue::dialogue::DialogueRequestQueue>,
+    mut request_queue: ResMut<bevy_real_ai::dialogue::DialogueRequestQueue>,
 ) {
     let Ok(player_entity) = player_query.single() else {
         return;
@@ -259,10 +259,7 @@ fn handle_input(
         context_request.request(player_entity);
         
         info!("Asking: {}", prompt);
-        request_queue.push(bevy_ai_dialogue::dialogue::DialogueRequest {
-            entity: player_entity,
-            prompt: prompt.to_string(),
-        });
+        request_queue.push(DialogueRequest::text(player_entity, prompt.to_string()));
     }
 }
 

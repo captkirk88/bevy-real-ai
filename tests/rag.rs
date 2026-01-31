@@ -1,5 +1,5 @@
 use bevy::prelude::*;
-use bevy_ai_dialogue::prelude::*;
+use bevy_real_ai::prelude::*;
 use std::sync::Arc;
 
 struct EchoAi;
@@ -20,7 +20,7 @@ fn retrieval_augmented_ai_includes_context_in_prompt() {
     app.insert_resource(LocalAiHandle::new(backend));
 
     // Spawn entity with Speaker + DialogueReceiver + AiContext component
-    let mut context = bevy_ai_dialogue::rag::AiContext::new();
+    let mut context = bevy_real_ai::rag::AiContext::new();
     context.add_context("The tavern is to the east, full of noisy patrons.");
     context.add_context("A lantern hangs above the doorway.");
     
@@ -34,6 +34,6 @@ fn retrieval_augmented_ai_includes_context_in_prompt() {
         .id();
 
     // Ask through helper and assert echo includes context
-    let resp = bevy_ai_dialogue::test_helpers::ask_ai_and_wait(&mut app, e, "Where is the tavern?", 50).expect("expected response");
+    let resp = bevy_real_ai::test_helpers::ask_ai_and_wait(&mut app, e, "Where is the tavern?", 50).expect("expected response");
     assert!(resp.contains("tavern"));
 }

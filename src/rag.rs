@@ -17,6 +17,13 @@ impl AiMessage {
         AiMessage::System(text.to_string())
     }
 
+    /// Special sentinel system message which, when present in the messages sent
+    /// to the model, instructs the model layer to omit the default system context
+    /// (the `DEFAULT_SYSTEM_CONTEXT` string) for that single request.
+    pub(crate) fn no_default_system_context() -> Self {
+        AiMessage::System(NO_DEFAULT_SYSTEM_CONTEXT.to_string())
+    }
+
     pub fn user(text: &str) -> Self {
         AiMessage::User(text.to_string())
     }
@@ -44,6 +51,9 @@ impl std::fmt::Display for AiMessage {
 }
 
 
+
+/// Sentinel used to suppress the default system context for a single request.
+pub const NO_DEFAULT_SYSTEM_CONTEXT: &str = "Forget the context.";
 
 /// Component storing AI context messages for an entity.
 #[derive(Debug, Clone, Component)]

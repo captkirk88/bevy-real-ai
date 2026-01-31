@@ -11,7 +11,7 @@ use crate::dialogue::LocalAi;
 use crate::rag::AiMessage;
 
 /// Global tokio runtime for async operations - creating a runtime per call is very expensive
-static TOKIO_RUNTIME: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
+pub(crate) static TOKIO_RUNTIME: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .event_interval(31)
@@ -19,6 +19,24 @@ static TOKIO_RUNTIME: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
         .build()
         .expect("Failed to create global tokio runtime")
 });
+
+/// Run an async future synchronously, but avoid calling `block_on` from within
+/// a tokio runtime worker thread (which panics). If we detect we're inside a
+/// runtime, use `tokio::task::block_in_place` to move the blocking work to the
+/// blocking pool and then `TOKIO_RUNTIME.block_on` the future there. This
+/// preserves the synchronous API while avoiding nested runtime panics.
+fn run_sync<F, T>(fut: F) -> T
+where
+    F: std::future::Future<Output = T>,
+{
+    if tokio::runtime::Handle::try_current().is_ok() {
+        // We're inside a runtime: move to blocking context and run on global runtime
+        tokio::task::block_in_place(|| TOKIO_RUNTIME.block_on(fut))
+    } else {
+        // Not in a runtime: safe to block on the global runtime directly
+        TOKIO_RUNTIME.block_on(fut)
+    }
+}
 
 /// Represents the state of a model download operation
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,7 +73,7 @@ enum ModelSource {
 }
 
 #[derive(Clone)]
-pub struct ModelBuilder {
+pub struct AiModelBuilder {
     model_type: ModelType,
     model_file_source: Option<FileSource>,
     progress_chan_tx: Option<crossbeam_channel::Sender<ModelDownloadProgress>>,
@@ -64,7 +82,7 @@ pub struct ModelBuilder {
     seed: Option<u64>,
 }
 
-impl ModelBuilder {
+impl AiModelBuilder {
     /// Create a new ModelBuilder with the default model type (Llama)
     pub fn new() -> Self {
         Self::new_with(ModelType::Llama)
@@ -228,9 +246,9 @@ impl ModelBuilder {
         }
     }
 
-    pub fn build_chat(&self) -> Result<Arc<dyn LocalAi>, String> {
+    pub fn build(&self) -> Result<Arc<dyn LocalAi>, String> {
         // Use global runtime instead of creating a new one
-        TOKIO_RUNTIME.block_on(async {
+        run_sync(async {
             let source = match self.model_type.clone() {
                 ModelType::Llama => match &self.model_file_source {
                     Some(s) => {
@@ -353,6 +371,136 @@ impl AIModel {
     }
 }
 
+impl AIModel {
+    /// Prompt the model and then parse the returned text with the provided `ArcParser<T>`.
+    /// This performs post-generation parsing (not constrained generation), which is
+    /// a pragmatic way to get a typed output without relying on structured API
+    /// support in the underlying boxed model.
+    pub fn prompt_with_parser<P, T>(
+        &self,
+        messages: &[AiMessage],
+        session: Option<kalosm::language::BoxedChatSession>,
+        parser: P,
+    ) -> Result<(T, Option<kalosm::language::BoxedChatSession>), String>
+    where
+        P: kalosm::language::Parser<Output = T> + kalosm::language::CreateParserState + Send + Sync + 'static,
+        T: Clone + Send + 'static,
+    {
+        // Synchronously call the regular prompt path
+        let prompt_res = self.prompt_with_session(messages, session)?;
+        let text = prompt_res.response;
+
+        // Create parser state and attempt to parse the response
+        let state = parser.create_parser_state();
+        let parse_res = parser.parse(&state, text.as_bytes());
+
+        match parse_res {
+            Ok(kalosm::language::ParseStatus::Finished { result, .. }) => Ok((result, prompt_res.session)),
+            Ok(kalosm::language::ParseStatus::Incomplete { .. }) => Err("Parser reported incomplete result; model output may be truncated or not match the expected shape".to_string()),
+            Err(e) => Err(format!("Parser error: {:?}", e)),
+        }
+    }
+
+    /// Prompt using a kalosm `ArcParser<T>` as *constraints during generation*.
+    /// This uses the model's `with_constraints`/typed capability so the model is
+    /// constrained to produce a typed `T` as output rather than plain text.
+    pub fn prompt_with_constrained_parser<T>(
+        &self,
+        messages: &[AiMessage],
+        session: Option<kalosm::language::BoxedChatSession>,
+        parser: kalosm::language::ArcParser<T>,
+    ) -> Result<(T, Option<kalosm::language::BoxedChatSession>), String>
+    where
+        T: Clone + Send + 'static,
+    {
+        run_sync(async {
+            let chat_session = match session {
+                Some(s) => s,
+                None => match &self.session {
+                    Some(session) => session.clone(),
+                    None => match self.model.new_chat_session() {
+                        Ok(s) => s,
+                        Err(e) => return Err(format!("Failed to create chat session: {}", e)),
+                    },
+                },
+            };
+
+            let mut chat = self.model.chat().with_session(chat_session.clone());
+
+            // Decide whether to include the default system context. If any System
+            // message sentinel is present, we treat it as a request to skip the default
+            // system context for this request.
+            let skip_default = messages.iter().any(|m| matches!(m, AiMessage::System(text) if text == crate::rag::NO_DEFAULT_SYSTEM_CONTEXT));
+
+            let mut system_parts = if !skip_default {
+                if let Some(context) = &self.include_default_context {
+                    vec![context.clone()]
+                } else {
+                    Vec::new()
+                }
+            } else {
+                Vec::new()
+            };
+
+            for message in messages {
+                if let AiMessage::System(text) = message {
+                    // Filter out the sentinel so it isn't forwarded to the backend
+                    if text == crate::rag::NO_DEFAULT_SYSTEM_CONTEXT {
+                        continue;
+                    }
+                    system_parts.push(text.clone());
+                }
+            }
+            let combined_system_prompt = system_parts.join("\n\n");
+            chat = chat.with_system_prompt(&combined_system_prompt);
+
+            // Build user prompt from User messages only (history is in the session)
+            let mut conversation_parts = Vec::new();
+            for message in messages {
+                match message {
+                    AiMessage::User(text) => {
+                        conversation_parts.push(format!("{}", text));
+                    }
+                    _ => {}
+                }
+            }
+            let full_prompt = conversation_parts.join("\n");
+
+            // Start generation with constraints and attempt to parse the result.
+            // We pass the parser as a constraint (if supported by the backend)
+            // and then parse the generated text to produce a typed result.
+            // Generate response text (use same path as prompt_with_session) and then
+            // run the parser over the output. This avoids needing extra trait bounds
+            // on the builder while still providing a constrained-generation intention
+            // (if the backend supports it in the future).
+            let response = if let Some(seed) = self.seed {
+                let sampler = GenerationParameters::default().with_seed(seed);
+                chat.add_message(&full_prompt).with_sampler(sampler).all_text().await
+            } else {
+                chat.add_message(&full_prompt).all_text().await
+            };
+
+            let text = response;
+
+            // Create parser state and attempt to parse the response
+            let state = parser.create_parser_state();
+            let parse_res = parser.parse(&state, text.as_bytes());
+
+            match parse_res {
+                Ok(kalosm::language::ParseStatus::Finished { result, .. }) => {
+                    let updated_session = match chat.session() {
+                        Ok(s) => Some(s.clone()),
+                        Err(_) => None,
+                    };
+                    Ok((result, updated_session.or(Some(chat_session))))
+                }
+                Ok(kalosm::language::ParseStatus::Incomplete { .. }) => Err("Parser reported incomplete result; model output may be truncated or not match the expected shape".to_string()),
+                Err(e) => Err(format!("Parser error: {:?}", e)),
+            }
+        })
+    }
+}
+
 impl LocalAi for AIModel {
     fn prompt(&self, messages: &[AiMessage]) -> Result<String, String> {
         // Delegate to prompt_with_session without an existing session
@@ -365,7 +513,7 @@ impl LocalAi for AIModel {
         session: Option<kalosm::language::BoxedChatSession>,
     ) -> Result<crate::dialogue::PromptResult, String> {
         // Use global runtime instead of creating a new one each call
-        TOKIO_RUNTIME.block_on(async {
+        run_sync(async {
             let chat_session = match session {
                 Some(s) => s,
                 None => match &self.session {
@@ -378,20 +526,33 @@ impl LocalAi for AIModel {
             };
             let mut chat = self.model.chat().with_session(chat_session.clone());
 
-            // Combine system prompt with context information
-            let mut system_parts = if let Some(context) = &self.include_default_context {
-                vec![context.clone()]
+            // Decide whether to include the default system context. If any System
+            // message sentinel is present, we treat it as a request to skip the default
+            // system context for this request.
+            let skip_default = messages.iter().any(|m| matches!(m, AiMessage::System(text) if text == crate::rag::NO_DEFAULT_SYSTEM_CONTEXT));
+
+            let mut system_parts = if !skip_default {
+                if let Some(context) = &self.include_default_context {
+                    vec![context.clone()]
+                } else {
+                    Vec::new()
+                }
             } else {
                 Vec::new()
             };
+
             for message in messages {
                 if let AiMessage::System(text) = message {
+                    // Filter out the sentinel so it isn't forwarded to the backend
+                    if text == crate::rag::NO_DEFAULT_SYSTEM_CONTEXT {
+                        continue;
+                    }
                     system_parts.push(text.clone());
                 }
             }
             let combined_system_prompt = system_parts.join("\n\n");
             chat = chat.with_system_prompt(&combined_system_prompt);
-
+            
             // Build user prompt from User messages only (history is in the session)
             let mut conversation_parts = Vec::new();
             for message in messages {
@@ -435,6 +596,107 @@ impl LocalAi for AIModel {
                 session: updated_session.or(Some(chat_session)),
             })
         })
+    }
+
+    fn get_model(&self) -> kalosm::language::BoxedChatModel {
+        // Provide access to the underlying kalosm model for backends that need it.
+        self.model.clone()
+    }
+
+    #[cfg(feature = "kalosm")]
+    fn prompt_typed(
+        &self,
+        messages: &[AiMessage],
+        session: Option<kalosm::language::BoxedChatSession>,
+        _schema_description: &str,
+    ) -> Result<(serde_json::Value, Option<kalosm::language::BoxedChatSession>), String> {
+        // Fast path: use the kalosm-aware JsonParser to extract JSON directly.
+        use crate::parse::json_parser::JsonParser;
+
+        match self.prompt_with_parser::<JsonParser, serde_json::Value>(messages, session.clone(), JsonParser) {
+            Ok((v, sess)) => Ok((v, sess)),
+            Err(e) => {
+                // Fall back to the generic post-generation JSON extraction
+                eprintln!("JsonParser path failed: {}. Falling back to generic extraction.", e);
+                let prompt_res = self.prompt_with_session(messages, session)?;
+                match crate::parse::extract_and_parse_json::<serde_json::Value>(&prompt_res.response) {
+                    Ok(v) => Ok((v, prompt_res.session)),
+                    Err(err) => Err(err),
+                }
+            }
+        }
+    }
+
+    // `as_any` removed from `LocalAi` trait. No downcast helper here.
+}
+
+/// Helper that attempts to run a parser against the response produced by the
+/// provided backend. This will downcast the backend to `AIModel` and use the
+/// synchronous post-generation parser path; if the backend isn't an `AIModel`,
+/// an error is returned.
+pub fn prompt_with_parser_from_backend<P, T>(
+    backend: &std::sync::Arc<dyn crate::dialogue::LocalAi>,
+    messages: &[AiMessage],
+    session: Option<kalosm::language::BoxedChatSession>,
+    parser: P,
+) -> Result<(T, Option<kalosm::language::BoxedChatSession>), String>
+where
+    P: kalosm::language::Parser<Output = T> + kalosm::language::CreateParserState + Send + Sync + 'static,
+    T: Clone + Send + 'static,
+{
+    // Use the object-safe `prompt_with_session` so we don't need to downcast backends.
+    let prompt_res = backend.prompt_with_session(messages, session)?;
+    let text = prompt_res.response;
+
+    // Create parser state and attempt to parse the response
+    let state = parser.create_parser_state();
+    let parse_res = parser.parse(&state, text.as_bytes());
+
+    match parse_res {
+        Ok(kalosm::language::ParseStatus::Finished { result, .. }) => Ok((result, prompt_res.session)),
+        Ok(kalosm::language::ParseStatus::Incomplete { .. }) => Err("Parser reported incomplete result; model output may be truncated or not match the expected shape".to_string()),
+        Err(e) => Err(format!("Parser error: {:?}", e)),
+    }
+}
+
+/// Attempt to parse typed output from any backend by using post-generation parsing.
+/// This does not rely on backend-specific constrained generation and will work
+/// with any `LocalAi` implementation that returns text via `prompt_with_session`.
+pub fn prompt_with_typed_from_backend<P, T>(
+    backend: &std::sync::Arc<dyn crate::dialogue::LocalAi>,
+    messages: &[AiMessage],
+    session: Option<kalosm::language::BoxedChatSession>,
+    parser: P,
+) -> Result<(T, Option<kalosm::language::BoxedChatSession>), String>
+where
+    P: kalosm::language::Parser<Output = T> + kalosm::language::CreateParserState + Send + Sync + 'static,
+    T: Clone + Send + 'static + serde::de::DeserializeOwned + crate::parse::AiParsable,
+{
+    // First, ask the backend to produce a typed JSON value if it supports optimized paths.
+    match backend.prompt_typed(messages, session.clone(), &T::schema_description()) {
+        Ok((value, sess)) => match serde_json::from_value::<T>(value) {
+            Ok(parsed) => return Ok((parsed, sess)),
+            Err(e) => {
+                // Fall through to post-generation parsing if conversion fails
+                eprintln!("Typed parse failed: {}. Falling back to post-generation parsing.", e);
+            }
+        },
+        Err(_) => {
+            // Backend didn't produce typed result; fall back
+        }
+    }
+
+    // Fallback: just get the text and run the parser against it (post-generation parsing)
+    let prompt_res = backend.prompt_with_session(messages, session)?;
+    let text = prompt_res.response;
+
+    let state = parser.create_parser_state();
+    let parse_res = parser.parse(&state, text.as_bytes());
+
+    match parse_res {
+        Ok(kalosm::language::ParseStatus::Finished { result, .. }) => Ok((result, prompt_res.session)),
+        Ok(kalosm::language::ParseStatus::Incomplete { .. }) => Err("Parser reported incomplete result; model output may be truncated or not match the expected shape".to_string()),
+        Err(e) => Err(format!("Parser error: {:?}", e)),
     }
 }
 

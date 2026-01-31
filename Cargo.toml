@@ -1,8 +1,10 @@
 [package]
-name = "bevy_ai_dialogue"
+name = "bevy_real_ai"
 version = "0.1.0"
 edition = "2024"
 
+[workspace]
+members = [".", "bevy_real_ai_derive"]
 
 [lib]
 path = "src/lib.rs"
@@ -23,6 +25,8 @@ kalosm = { version = "0.4", features = ["language", "openai"], optional = true }
 tokio = { version = "1.49", features = ["full"] }
 zeroize ={ version = "1.8" }
 console = "0.16"
+kalosm-sample = "0.4"
+bevy_real_ai_derive = { path = "bevy_real_ai_derive" }
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
 kalosm = { version = "0.4", features = ["language", "openai", "metal"], optional = true }
 

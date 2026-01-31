@@ -1,6 +1,7 @@
-use crate::rag::*;
+use crate::{parse::AiParsable, rag::*};
 use bevy::prelude::*;
 use flume::{Receiver, Sender, unbounded};
+use kalosm::language::BoxedChatModel;
 use std::sync::Arc;
 
 /// Event fired when model download progress is updated
@@ -59,12 +60,16 @@ impl Speaker {
 }
 
 /// Component for entities that can receive dialogue responses
+use crate::actions::{ActionPayload, AiActionEvent};
+
 #[derive(Component, Debug, Clone)]
 pub struct DialogueReceiver {
     /// Optional preprogrammed response (immediate, no AI call)
     pub preprogrammed: Option<String>,
     /// Last response received (for testing / display)
     pub last_response: Option<String>,
+    /// Actions parsed from the last AI response (if any)
+    pub actions: Vec<ActionPayload>,
 }
 
 impl DialogueReceiver {
@@ -72,6 +77,44 @@ impl DialogueReceiver {
         Self {
             preprogrammed: None,
             last_response: None,
+            actions: Vec::new(),
+        }
+    }
+
+    pub fn new_with_preprogrammed(response: impl ToString) -> Self {
+        Self {
+            preprogrammed: Some(response.to_string()),
+            last_response: None,
+            actions: Vec::new(),
+        }
+    }
+}
+
+impl Default for DialogueReceiver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum DialogueRequestKind {
+    /// Text message with a flag controlling whether gathered context should be included.
+    Text { message: String, include_context: bool },
+    Typed { user_message: String, schema_description: String, action_name: String },
+}
+
+impl DialogueRequestKind {
+    pub fn as_user_message(&self) -> &str {
+        match self {
+            DialogueRequestKind::Text { message, .. } => message.as_str(),
+            DialogueRequestKind::Typed { user_message, .. } => user_message.as_str(),
+        }
+    }
+
+    pub fn include_context(&self) -> bool {
+        match self {
+            DialogueRequestKind::Text { include_context, .. } => *include_context,
+            DialogueRequestKind::Typed { .. } => true,
         }
     }
 }
@@ -79,13 +122,30 @@ impl DialogueReceiver {
 #[derive(Debug, Clone)]
 pub struct DialogueRequest {
     pub entity: Entity,
-    pub prompt: String,
+    pub kind: DialogueRequestKind,
+}
+
+impl DialogueRequest {
+    pub fn text(entity: Entity, prompt: impl Into<String>) -> Self {
+        Self { entity, kind: DialogueRequestKind::Text { message: prompt.into(), include_context: true } }
+    }
+
+    /// Create a text request that will *not* include gathered context when sent to the model.
+    pub fn text_no_context(entity: Entity, prompt: impl Into<String>) -> Self {
+        Self { entity, kind: DialogueRequestKind::Text { message: prompt.into(), include_context: false } }
+    }
+
+    /// Create a typed request with schema description.
+    pub fn typed(entity: Entity, user_message: impl Into<String>, schema_description: impl Into<String>, action_name: impl Into<String>) -> Self {
+        Self { entity, kind: DialogueRequestKind::Typed { user_message: user_message.into(), schema_description: schema_description.into(), action_name: action_name.into() } }
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct DialogueResponse {
     pub entity: Entity,
     pub response: String,
+    pub kind: DialogueRequestKind,
 }
 
 use std::collections::VecDeque;
@@ -108,11 +168,62 @@ impl DialogueRequestQueue {
     }
 
     pub fn push(&mut self, request: DialogueRequest) {
+        debug!("Queued DialogueRequest for entity {:?}: {:?}", request.entity, request.kind);
         self.queue.push_back(request);
     }
 
     pub fn pop(&mut self) -> Option<DialogueRequest> {
         self.queue.pop_front()
+    }
+}
+
+/// System parameter for enqueueing AI requests
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct AiRequest<'w, 's> {
+    queue: ResMut<'w, DialogueRequestQueue>,
+    // Second lifetime to satisfy SystemParam signature requirements.
+    _marker: std::marker::PhantomData<&'s ()>,
+}
+
+impl<'w, 's> AiRequest<'w, 's> {
+    /// Convenience method to push a simple text prompt for an entity.
+    ///
+    /// Adds a short instruction to the prompt to encourage a plain, human-readable
+    /// response (no JSON, code blocks, or structured action output).
+    pub fn ask_text(&mut self, ai_entity: Entity, prompt: impl ToString) {
+        let user_message = format!(
+            "{}\n\nPlease respond in plain text only (no JSON or code blocks).",
+            prompt.to_string()
+        );
+        self.queue.push(DialogueRequest::text_no_context(ai_entity, user_message));
+    }
+
+    /// Inquire with context gathering.
+    pub fn inquire(&mut self, ai_entity: Entity, prompt: impl ToString) {
+        let user_message = format!(
+            "{}\n\nPlease respond in plain text only (no JSON or code blocks).",
+            prompt.to_string()
+        );
+        self.queue.push(DialogueRequest::text(ai_entity, user_message));
+    }
+
+    /// Ask for a typed action according to the schema of the provided `Action` type.
+    pub fn ask_action<Action>(&mut self, ai_entity: Entity, prompt: impl ToString)
+    where
+        Action: AiParsable,
+    {
+        let schema_description = Action::schema_description();
+        let user_message = format!(
+            "{}\nProvide a JSON action matching the following schema:\n{}",
+            prompt.to_string(),
+            schema_description
+        );
+        self.queue.push(DialogueRequest::typed(
+            ai_entity,
+            user_message,
+            schema_description,
+            Action::action_name().to_string(),
+        ));
     }
 }
 
@@ -145,6 +256,28 @@ pub trait LocalAi: Send + Sync + 'static {
             Err(e) => Err(e),
         }
     }
+
+    fn get_model(&self) -> BoxedChatModel {
+        unimplemented!("get_model is not implemented for this LocalAi backend");
+    }
+
+    /// Attempt to produce a typed JSON value according to the provided schema description.
+    ///
+    /// Default implementation performs post-generation parsing by calling
+    /// `prompt_with_session` and extracting JSON from the returned text.
+    fn prompt_typed(
+        &self,
+        messages: &[AiMessage],
+        session: Option<kalosm::language::BoxedChatSession>,
+        _schema_description: &str,
+    ) -> Result<(serde_json::Value, Option<kalosm::language::BoxedChatSession>), String> 
+    {
+        let prompt_res = self.prompt_with_session(messages, session)?;
+        match crate::parse::extract_and_parse_json::<serde_json::Value>(&prompt_res.response) {
+            Ok(v) => Ok((v, prompt_res.session)),
+            Err(e) => Err(e),
+        }
+    }
 }
 
 /// A handle resource that holds the backend and a channel for responses.
@@ -168,14 +301,22 @@ impl LocalAiHandle {
         let (tx, rx) = unbounded();
         Self { backend: None, tx, rx }
     }
+
+    pub fn is_loaded(&self) -> bool {
+        self.backend.is_some()
+    }
+
+    pub fn get_backend(&self) -> Option<Arc<dyn LocalAi>> {
+        self.backend.clone()
+    }
 }
 
 use crate::context::{AiContextGatherConfig, ContextGatherRequest, AiSystemContextStore};
 
 /// Plugin that adds NPC dialogue capabilities with the provided LocalAi backend.
 pub struct AIDialoguePlugin {
-    pub backend: Option<Arc<dyn LocalAi>>,
-    pub builder: Option<crate::models::ModelBuilder>,
+    backend: Option<Arc<dyn LocalAi>>,
+    builder: Option<crate::models::AiModelBuilder>,
     pub gather_config: AiContextGatherConfig,
 }
 
@@ -191,7 +332,7 @@ impl AIDialoguePlugin {
 
     /// Create a plugin with a model builder for async loading.
     /// Starts with MockAi while the model loads in the background.
-    pub fn with_builder(builder: crate::models::ModelBuilder) -> Self {
+    pub fn with_builder(builder: crate::models::AiModelBuilder) -> Self {
         Self {
             backend: None,
             builder: Some(builder),
@@ -213,7 +354,7 @@ impl Default for AIDialoguePlugin {
         // Default plugin uses the built-in mock backend so tests and examples can work without
         // external dependencies.
         Self {
-            backend: Some(Arc::new(MockAi {})),
+            backend: None,
             builder: None,
             gather_config: AiContextGatherConfig {
                 radius: 5.0,
@@ -240,7 +381,7 @@ impl Plugin for AIDialoguePlugin {
         } else if let Some(backend) = &self.backend {
             LocalAiHandle::new(backend.clone())
         } else {
-            eprintln!("AIDialoguePlugin: No backend or builder provided. Using MockAi.");
+            warn!("AIDialoguePlugin: No backend or builder provided. Using MockAi.");
             LocalAiHandle::new(Arc::new(MockAi {}))
         };
         
@@ -250,13 +391,22 @@ impl Plugin for AIDialoguePlugin {
             .insert_resource(AiSystemContextStore::new())
             .insert_resource(self.gather_config.clone())
             .insert_resource(ContextGatherRequest::default())
-            .insert_resource(PendingModelLoads::default());
+            .insert_resource(PendingModelLoads::default())
+            // Register the AiActionEvent and registry for handlers
+            .insert_resource(crate::actions::AiActionRegistry::default())
+            .insert_resource(crate::actions::PendingAiActions::default());
 
         // Schedule dialogue request handling first, then gather (which may have been triggered by dialogue),
         // then response polling. This ensures context is gathered in the same frame as the request is made.
         app.add_systems(
             Update,
-            (handle_dialogue_requests, crate::context::gather_on_request_world, poll_responses_receiver, poll_pending_model_loads)
+            (
+                handle_dialogue_requests,
+                crate::context::gather_on_request_world,
+                poll_responses_receiver,
+                crate::actions::run_registered_actions_world,
+                poll_pending_model_loads,
+            )
                 .chain(),
         );
 
@@ -328,13 +478,19 @@ fn poll_pending_model_loads(
     }
 }
 
+/// System condition used with `run_if` to determine if the model has finished loading.
+/// Returns `true` when the `LocalAiHandle` has a backend (model loaded), otherwise `false`.
+pub fn on_model_load_complete(ai_handle: Option<Res<LocalAiHandle>>) -> bool {
+    ai_handle.map(|h| h.is_loaded()).unwrap_or(false)
+}
+
 
 /// Helper to build a model and track its progress using the resource-based system.
 /// Call this from a startup system or any system that needs to load a model asynchronously.
 pub fn start_model_load(
     pending: &mut ResMut<PendingModelLoads>,
     model_name: String,
-    mut builder: crate::models::ModelBuilder,
+    mut builder: crate::models::AiModelBuilder,
 ) {
     // Extract progress receiver before building
     let progress_receiver = builder.take_progress_receiver();
@@ -344,7 +500,7 @@ pub fn start_model_load(
 
     // Spawn a thread that builds the model and sends the result
     std::thread::spawn(move || {
-        match builder.build_chat() {
+        match builder.build() {
             Ok(arc_model) => {
                 let _ = result_tx.send(Ok(arc_model));
             }
@@ -370,6 +526,7 @@ fn handle_dialogue_requests(
     ai_handle: Res<LocalAiHandle>,
     query: Query<&DialogueReceiver>,
     mut gather_req: Option<ResMut<crate::context::ContextGatherRequest>>,
+    gather_store: Option<Res<crate::context::AiSystemContextStore>>,
     ctx_query: Query<&crate::rag::AiContext>,
 ) {
     // Get the backend, or return early if not loaded yet (requests stay queued)
@@ -384,49 +541,156 @@ fn handle_dialogue_requests(
                 let _ = ai_handle.tx.send(DialogueResponse {
                     entity: req.entity,
                     response: pre.clone(),
+                    kind: req.kind.clone(),
                 });
                 continue;
             }
         }
 
-        // Signal an on-demand gather for the requester; the exclusive gather system will run
-        if let Some(gr) = gather_req.as_mut() {
-            gr.request(req.entity);
+        // Signal an on-demand gather for the requester only if the request needs context,
+        // there are context-gathering systems registered, and the entity doesn't already have
+        // collected context.
+        if req.kind.include_context() {
+            if let (Some(gr), Some(store)) = (gather_req.as_mut(), gather_store.as_ref()) {
+                if !store.systems().is_empty() {
+                    // Avoid re-gathering if the entity already has an `AiContext` component
+                    if ctx_query.get(req.entity).is_err() {
+                        gr.request(req.entity);
+                    }
+                }
+            }
         }
 
-        // Build message vector: if context docs are available, include them as system messages
+        // Build message vector: include a sentinel System message to suppress the
+        // default system context if the request opted out of context.
         let mut messages: Vec<AiMessage> = Vec::new();
-        if let Ok(ctx) = ctx_query.get(req.entity) {
-            messages.extend_from_slice(ctx.messages());
+        if !req.kind.include_context() {
+            messages.push(crate::rag::AiMessage::no_default_system_context());
         }
-        messages.push(AiMessage::user(req.prompt.as_str()));
+        if let Ok(ctx) = ctx_query.get(req.entity) {
+            // Include gathered context only when the request indicates it should be included.
+            if req.kind.include_context() {
+                messages.extend_from_slice(ctx.messages());
+            }
+        }
+        // Add the user message from the request kind
+        messages.push(AiMessage::user(req.kind.as_user_message()));
 
-        // Call backend on a background thread with message-style prompt and send result to the response channel
+        // Call backend on a background task and send result to the response channel
         let backend = backend.clone();
         let tx = ai_handle.tx.clone();
         let msgs = messages.clone();
         let entity = req.entity;
-        std::thread::spawn(move || {
-            let result = backend
-                .prompt(&msgs)
-                .unwrap_or_else(|e| format!("(ai error: {})", e));
-            let _ = tx.send(DialogueResponse {
-                entity,
-                response: result,
-            });
+        let kind = req.kind.clone();
+
+        crate::models::TOKIO_RUNTIME.spawn(async move {
+            let result = match &kind {
+                DialogueRequestKind::Text { .. } => {
+                    backend
+                        .prompt(&msgs)
+                        .unwrap_or_else(|e| format!("(ai error: {})", e))
+                }
+                DialogueRequestKind::Typed { schema_description, .. } => {
+                    match backend.prompt_typed(&msgs, None, schema_description) {
+                        Ok((val, _)) => serde_json::to_string(&val).unwrap_or_else(|_| "(ai error: failed to serialize typed response)".to_string()),
+                        Err(e) => format!("(ai error: {})", e),
+                    }
+                }
+            };
+
+            let _ = tx
+                .send_async(DialogueResponse { entity, response: result, kind })
+                .await;
         });
     }
 }
 
 /// Poll channel and apply responses to receivers.
-fn poll_responses_receiver(mut query: Query<&mut DialogueReceiver>, ai_handle: Res<LocalAiHandle>) {
+fn poll_responses_receiver(
+    mut query: Query<&mut DialogueReceiver>,
+    ai_handle: Res<LocalAiHandle>,
+    mut pending: Option<ResMut<crate::actions::PendingAiActions>>,
+    mut commands: Commands,
+) {
     // Drain all available responses without blocking
     while let Ok(resp) = ai_handle.rx.try_recv() {
         if let Ok(mut receiver) = query.get_mut(resp.entity) {
+            // Attempt to interpret the entire response as JSON and convert to actions
+            let mut actions: Vec<ActionPayload> = Vec::new();
+            if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(&resp.response) {
+                match json_val {
+                    serde_json::Value::Object(map) => {
+                        match &resp.kind {
+                            DialogueRequestKind::Typed { action_name, .. } => {
+                                // Wrap the object as an action with the typed action name
+                                actions.push(crate::actions::ActionPayload { name: action_name.clone(), params: serde_json::Value::Object(map) });
+                            }
+                            _ => {
+                                if let Some(serde_json::Value::String(_)) = map.get("name") {
+                                    if let Some(action) = crate::actions::value_to_action(serde_json::Value::Object(map)) {
+                                        actions.push(action);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    serde_json::Value::Array(arr) => {
+                        match &resp.kind {
+                            DialogueRequestKind::Typed { action_name, .. } => {
+                                for v in arr.into_iter() {
+                                    actions.push(crate::actions::ActionPayload { name: action_name.clone(), params: v });
+                                }
+                            }
+                            _ => {
+                                for v in arr.into_iter() {
+                                    if let Some(action) = crate::actions::value_to_action(v) {
+                                        actions.push(action);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            for action in actions.iter() {
+                let event = AiActionEvent {
+                    entity: resp.entity,
+                    action: action.clone(),
+                };
+
+                // Log for debugging so we can see what was parsed and enqueued
+                debug!("Enqueuing AI action '{}' for entity {:?} with params: {}", action.name, resp.entity, action.params);
+
+                // Push into pending actions resource so the world-runner can execute handlers
+                if let Some(p) = pending.as_mut() {
+                    p.actions.push(event.clone());
+                }
+
+                // Also emit an event so other systems can react if they want
+                commands.trigger(event);
+            }
+
+            // Store parsed actions
+            receiver.actions = actions;
+
+            // If this was a simple text request that explicitly excluded context, keep only the
+            // first paragraph of the response to avoid the model appending unrelated lists or
+            // context dumps. Otherwise keep the full response.
+            // let cleaned_response = match &resp.kind {
+            //     DialogueRequestKind::Text { include_context: false, .. } => {
+            //         resp.response.split("\n\n").next().unwrap_or(&resp.response).trim().to_string()
+            //     }
+            //     _ => resp.response.trim().to_string(),
+            // };
+
             receiver.last_response = Some(resp.response.trim().to_string());
         }
     }
 }
+
+
 
 /// A very small mock AI backend used by default and for tests.
 pub struct MockAi {}

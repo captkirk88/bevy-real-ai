@@ -2,14 +2,15 @@
 //!
 //! Run with: `cargo run --example basic --release`
 //!
-//! This is the simplest possible example of using bevy_ai_dialogue for AI dialogue.
+//! This is the simplest possible example of using bevy_real_ai for AI dialogue.
 //! Uses async model loading - requests are queued until the model is ready.
 //! See `npc_dialogue.rs` for a more complete example with progress bar UI.
 
 use bevy::ecs::observer::On;
 use bevy::prelude::*;
-use bevy_ai_dialogue::models::ModelBuilder;
-use bevy_ai_dialogue::prelude::*;
+use bevy_real_ai::dialogue::AiRequest;
+use bevy_real_ai::models::AiModelBuilder;
+use bevy_real_ai::prelude::*;
 
 fn main() {
     App::new()
@@ -23,7 +24,7 @@ fn main() {
 
 fn setup_ai_plugin() -> AIDialoguePlugin {
     // Use async builder with progress tracking (model loads in background)
-    let builder = ModelBuilder::new()
+    let builder = AiModelBuilder::new()
         .with_seed(42)
         .with_progress();
 
@@ -40,7 +41,7 @@ fn on_model_load_complete(trigger: On<ModelLoadCompleteEvent>) {
     }
 }
 
-fn setup(mut commands: Commands, mut request_queue: ResMut<DialogueRequestQueue>) {
+fn setup(mut commands: Commands, mut request_queue: AiRequest) {
     println!("Setting up dialogue entity...");
     println!("Waiting for model to load in background...");
 
@@ -48,15 +49,12 @@ fn setup(mut commands: Commands, mut request_queue: ResMut<DialogueRequestQueue>
     let entity = commands.spawn((
         Speaker::new("Player", "A curious person"),
         DialogueReceiver::new(),
-        bevy_ai_dialogue::context::AI,
+        bevy_real_ai::context::AI,
     )).id();
 
     // Queue the request immediately - it will be processed once the model loads
     println!("Queuing dialogue request (will be processed when model is ready)...");
-    request_queue.push(DialogueRequest {
-        entity,
-        prompt: "Hello! What is 2 + 2?".to_string(),
-    });
+    request_queue.ask_text(entity, "Hello! What is 2 + 2?");
 }
 
 fn check_response(

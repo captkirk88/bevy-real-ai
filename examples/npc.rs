@@ -11,10 +11,7 @@
 //! The demo automatically asks all questions once the model loads.
 //! You can also press 1-3 to ask questions manually.
 
-use bevy::ecs::observer::On;
 use bevy::prelude::*;
-use bevy_real_ai::context::{AiSystemContextStore, ContextGatherRequest, AI, AIAware, AiEntity};
-use bevy_real_ai::models::{DownloadState, AiModelBuilder};
 use bevy_real_ai::prelude::*;
 
 /// Questions available for the player to ask (label, prompt)
@@ -84,7 +81,6 @@ fn setup_world(mut commands: Commands, mut store: ResMut<AiSystemContextStore>) 
         Player,
         Transform::from_translation(Vec3::new(0.0, 0.0, 0.0)),
         AI, // This entity can initiate AI dialogue
-        Speaker::new("Player", "A curious adventurer"),
         DialogueReceiver::new(),
     ));
 

@@ -6,10 +6,7 @@
 //! Uses async model loading - requests are queued until the model is ready.
 //! See `npc_dialogue.rs` for a more complete example with progress bar UI.
 
-use bevy::ecs::observer::On;
 use bevy::prelude::*;
-use bevy_real_ai::dialogue::AiRequest;
-use bevy_real_ai::models::AiModelBuilder;
 use bevy_real_ai::prelude::*;
 
 fn main() {
@@ -47,7 +44,6 @@ fn setup(mut commands: Commands, mut request_queue: AiRequest) {
 
     // Spawn an entity that can speak and receive dialogue
     let entity = commands.spawn((
-        Speaker::new("Player", "A curious person"),
         DialogueReceiver::new(),
         bevy_real_ai::context::AI,
     )).id();

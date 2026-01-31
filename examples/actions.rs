@@ -7,11 +7,6 @@
 //! and queued as an action for the registered handler.
 
 use bevy::prelude::*;
-use bevy_real_ai::AiParse;
-use bevy_real_ai::actions::{PendingAiActions, prompt_typed_action};
-use bevy_real_ai::context;
-use bevy_real_ai::dialogue::LocalAiHandle;
-use bevy_real_ai::models::{AiModelBuilder, ModelType};
 use bevy_real_ai::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -65,9 +60,8 @@ fn setup(mut commands: Commands, mut registry: ResMut<AiActionRegistry>, mut req
 
     let player = commands
         .spawn((
-            Speaker::new("Player", "A test driver"),
             DialogueReceiver::new(),
-            context::AI,
+            AI,
         ))
         .id();
 

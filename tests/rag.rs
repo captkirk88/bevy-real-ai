@@ -27,7 +27,6 @@ fn retrieval_augmented_ai_includes_context_in_prompt() {
     let e = app
         .world_mut()
         .spawn((
-            Speaker::new("Bard", ""),
             DialogueReceiver::new(),
             context,
         ))

@@ -20,13 +20,22 @@ pub mod context;
 pub use bevy_real_ai_derive::AiParse;
 
 pub mod prelude {
-    pub use crate::dialogue::{AIDialoguePlugin, Speaker, DialogueReceiver, DialogueRequest, DialogueResponse, LocalAiHandle, LocalAi,AiRequest, ModelDownloadProgressEvent, ModelLoadCompleteEvent, PendingModelLoads, PendingModelLoad, start_model_load, on_model_load_complete};
-    pub use crate::rag::{AiMessage, AiContext, ChatHistory};
-    pub use crate::context::{AiSystemContextStore, AiContextGatherConfig, AiEntity, AI, AIAware};
-    pub use crate::models::{ModelType, AiModelBuilder, AIModel, SecureString};
-    pub use crate::actions::{AiAction, ActionPayload, AiActionEvent, AiActionRegistry,  PendingAiActions, prompt_typed_action};
-    pub use crate::parse::{AiParsable, AiSchemaType, extract_and_parse_json, build_typed_prompt};
     pub use crate::AiParse;
+    pub use crate::actions::{
+        ActionPayload, AiAction, AiActionEvent, AiActionRegistry, PendingAiActions,
+        prompt_typed_action,
+    };
+    pub use crate::context::{
+        AI, AIAware, AiContextGatherConfig, AiEntity, AiSystemContextStore, ContextGatherRequest,
+    };
+    pub use crate::dialogue::{
+        AIDialoguePlugin, AiRequest, DialogueReceiver, DialogueRequest, DialogueResponse, LocalAi,
+        LocalAiHandle, ModelDownloadProgressEvent, ModelLoadCompleteEvent, PendingModelLoad,
+        PendingModelLoads, on_model_load_complete, start_model_load,
+    };
+    pub use crate::models::{AIModel, AiModelBuilder, DownloadState, ModelType, SecureString};
+    pub use crate::parse::{AiParsable, build_typed_prompt, extract_and_parse_json};
+    pub use crate::rag::{AiContext, AiMessage, ChatHistory};
     // Keep kalosm exports for backward compatibility
-    pub use kalosm::language::{Parser, Schema, Parse};
+    pub use kalosm::language::{Parse, Parser, Schema};
 }

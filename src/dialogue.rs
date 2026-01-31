@@ -38,30 +38,10 @@ pub struct PendingModelLoad {
     pub progress_receiver: Option<crossbeam_channel::Receiver<crate::models::ModelDownloadProgress>>,
 }
 
-/// Public re-exports and types for users
-#[derive(Component, Debug, Clone)]
-pub struct Speaker {
-    pub name: String,
-    /// Prompt template; eg. "{name}: {message}" or use directly as prompt
-    pub prompt_template: String,
-}
-
-impl Speaker {
-    /// Create new Speaker
-    /// # Arguments
-    /// * `name` - Name of the speaker
-    /// * `prompt_template` - Prompt template to use for this speaker
-    pub fn new(name: &str, prompt_template: &str) -> Self {
-        Self {
-            name: name.to_string(),
-            prompt_template: prompt_template.to_string(),
-        }
-    }
-}
-
 /// Component for entities that can receive dialogue responses
 use crate::actions::{ActionPayload, AiActionEvent};
 
+/// Component for entities that can receive dialogue responses
 #[derive(Component, Debug, Clone)]
 pub struct DialogueReceiver {
     /// Optional preprogrammed response (immediate, no AI call)

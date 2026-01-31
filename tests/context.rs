@@ -79,7 +79,6 @@ fn gather_on_request_collects_nearby_entity_context() {
     // Test that the dialogue system includes context from gathered entities
     // Add dialogue components to the requester entity that already has context
     app.world_mut().entity_mut(requester).insert((
-        Speaker::new("Bard", ""),
         DialogueReceiver::new(),
     ));
 

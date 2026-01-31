@@ -12,7 +12,7 @@ fn preprogrammed_response_is_immediate() {
     // spawn entity with Speaker + DialogueReceiver (preprogrammed response)
     let e = app
         .world_mut()
-        .spawn((Speaker::new("Bob", ""), DialogueReceiver::new_with_preprogrammed("Hello, traveler"),))
+        .spawn((AI, DialogueReceiver::new_with_preprogrammed("Hello, traveler"),))
         .id();
 
     // Ask AI and wait for response using test helper
@@ -28,7 +28,7 @@ fn mock_ai_generates_response() {
     // spawn entity with Speaker + DialogueReceiver (no preprogrammed)
     let e = app
         .world_mut()
-        .spawn((Speaker::new("Alice", ""), DialogueReceiver::new(),))
+        .spawn((AI, DialogueReceiver::new(),))
         .id();
 
     // Ask AI and assert the response contains the expected text
@@ -61,7 +61,7 @@ fn custom_backend_can_be_used() {
     // replace backend with test backend
     app.insert_resource(LocalAiHandle::new(Arc::new(TestAi)));
 
-    let e = app.world_mut().spawn((Speaker::new("Eve", ""), DialogueReceiver::new(),)).id();
+    let e = app.world_mut().spawn((AI, DialogueReceiver::new(),)).id();
 
     // Ask and wait via helper
     let resp = bevy_real_ai::ask_ai_and_wait(&mut app, e, "Ping", 50).expect("expected response");
@@ -98,7 +98,7 @@ fn ai_action_block_is_parsed_and_stored() {
     // Use the action-generating backend
     app.insert_resource(LocalAiHandle::new(Arc::new(ActionAi)));
 
-    let e = app.world_mut().spawn((Speaker::new("Actor", ""), DialogueReceiver::new(),)).id();
+    let e = app.world_mut().spawn((AI,DialogueReceiver::new(),)).id();
 
     // Ask and wait via helper
     let _ = bevy_real_ai::ask_ai_and_wait(&mut app, e, "Do action", 50).expect("expected response");

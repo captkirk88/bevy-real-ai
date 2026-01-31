@@ -4,8 +4,11 @@ version = "0.1.0"
 edition = "2024"
 authors = ["captkirk88 <github.com/captkirk88>"]
 description = "Realistic AI integration for Bevy games using Kalosm."
+repository = ""
 license-file = "LICENSE"
 readme = "README.md"
+categories = ["game-development", "artificial-intelligence"]
+keywords = ["bevy", "ai", "kalosm", "game-development"]
 
 [workspace]
 members = [".", "bevy_real_ai_derive"]

@@ -7,7 +7,7 @@ description = "Realistic AI integration for Bevy games using Kalosm."
 repository = "https://github.com/captkirk88/bevy-real-ai"
 license = "MIT"
 readme = "README.md"
-categories = ["game-development", "artificial-intelligence"]
+categories = ["game-development"]
 keywords = ["bevy", "ai", "kalosm", "game-development"]
 
 exclude = ["*.nu", "*.sh", "*.ps1", "examples/*", "tests/*", "scripts/*"]

@@ -38,9 +38,7 @@ App::new()
 
 ## Examples
 
-- `examples/actions.rs` — demonstrates typed actions via `AiAction` and `prompt_typed_action`, and registering action handlers with `AiActionRegistry`.
-- [typed_actions.rs](examples/typed_actions.rs) — shows typed parsing flows.
-- [basic.rs](examples/basic.rs) and [npc.rs](examples/npc.rs) — minimal dialogue and NPC examples.
+- [examples/](/examples) — demonstrates usage scenarios.  More examples to come!
 
 Run any example with (always --release):
 

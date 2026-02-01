@@ -92,7 +92,7 @@ pub trait AiAppExt {
 
 impl AiAppExt for App {
     fn use_ai(&mut self, model_type: ModelType) -> &mut Self {
-        let builder = AiModelBuilder::new_with(model_type).with_progress_tracking();
+        let builder = AiModelBuilder::new_with(model_type).with_seed(0).include_default_context(true).with_progress_tracking();
         self.add_plugins(AIDialoguePlugin::with_builder(builder));
         self
     }

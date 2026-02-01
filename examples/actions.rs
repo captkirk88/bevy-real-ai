@@ -22,7 +22,7 @@ pub struct AiSpawned;
 struct ExamplePlayer(Entity);
 
 /// Typed struct for spawn actions - the AI will produce JSON matching this schema.
-/// The `AiAction` derive automatically implements both `AiParsable` (for JSON schema
+/// The `AiAction` derive automatically implements both `AiAction` (for JSON schema
 /// generation and parsing) and `IntoActionPayload` (for action conversion).
 /// The action name is derived from the struct name in snake_case: "spawn_entity_action"
 #[derive(Clone, Debug, Serialize, Deserialize, AiAction)]

@@ -53,6 +53,7 @@ static GLOBAL_FPS_SAMPLES: AtomicU32 = AtomicU32::new(0);
 static GLOBAL_FPS_SUM: AtomicU64 = AtomicU64::new(0);
 const MIN_SAMPLE_FRAMES: u32 = 5; // require this many frames before considering min
 
+#[allow(dead_code)]
 impl FpsStats {
     pub fn increment_below_50() {
         GLOBAL_BELOW_50.fetch_add(1, Ordering::Relaxed);
@@ -223,6 +224,7 @@ fn update_fps_text(
     }
 }
 
+#[allow(dead_code)]
 /// Prints FPS counters (reads from static counters).
 pub fn print_fps() {
     let last = FpsStats::last_fps();

@@ -28,6 +28,12 @@ App::new()
         ModelBuilder::new_with(ModelType::Llama).with_seed(42).with_progress_tracking(),
     ))
     .run();
+
+// or alternatively you don't need the plugin
+App::new()
+    .use_ai(ModelType::Llama);
+    // or
+    .use_ai_with_builder(ModelBuilder::new_with(ModelType::Llama).with_seed(42).with_progress_tracking());
 ```
 
 ## Examples

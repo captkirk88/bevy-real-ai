@@ -4,11 +4,13 @@ version = "0.1.0"
 edition = "2024"
 authors = ["captkirk88 <github.com/captkirk88>"]
 description = "Realistic AI integration for Bevy games using Kalosm."
-repository = ""
+repository = "https://github.com/captkirk88/bevy-real-ai"
 license-file = "LICENSE"
 readme = "README.md"
 categories = ["game-development", "artificial-intelligence"]
 keywords = ["bevy", "ai", "kalosm", "game-development"]
+
+exclude = ["*.nu", "*.sh", "*.ps1", "examples/*", "tests/*", "scripts/*"]
 
 [workspace]
 members = [".", "bevy_real_ai_derive"]
@@ -26,7 +28,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 futures-lite = "2.6"
 crossbeam-channel = "0.5"
-kalosm = { version = "0.4", features = ["language", "openai"], optional = true }
+kalosm = { version = "0.4", features = ["language", "openai", "anthropic"], optional = true }
 tokio = { version = "1.49", features = ["full"] }
 zeroize ={ version = "1.8" }
 console = "0.16"
@@ -37,7 +39,7 @@ kalosm = { version = "0.4", features = ["language", "openai", "metal"], optional
 
 [features]
 default = ["kalosm"]
-gpu = ["kalosm/cuda"]
+gpu = ["kalosm/mkl"]
 
 
 # Enable a small amount of optimization in the dev profile.

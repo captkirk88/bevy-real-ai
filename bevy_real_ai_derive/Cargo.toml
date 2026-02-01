@@ -2,6 +2,10 @@
 name = "bevy_real_ai_derive"
 version = "0.1.0"
 edition = "2024"
+description = "Derive macros for Bevy Real AI."
+authors = ["captkirk88 <github.com/captkirk88>"]
+repository = "https://github.com/captkirk88/bevy-real-ai"
+license = "MIT"
 
 [lib]
 proc-macro = true

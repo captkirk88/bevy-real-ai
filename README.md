@@ -25,7 +25,7 @@ use bevy_real_ai::prelude::*;
 App::new()
     .add_plugins(DefaultPlugins)
     .add_plugins(AIDialoguePlugin::with_builder(
-        ModelBuilder::new_with(ModelType::Llama).with_seed(42).with_progress(),
+        ModelBuilder::new_with(ModelType::Llama).with_seed(42).with_progress_tracking(),
     ))
     .run();
 ```

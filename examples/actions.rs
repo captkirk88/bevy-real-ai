@@ -35,7 +35,7 @@ fn main() {
         .add_plugins(AIDialoguePlugin::with_builder(
             AiModelBuilder::new_with(ModelType::Llama)
                 .with_seed(42)
-                .with_progress(),
+                .with_progress_tracking(),
         ))
         .add_systems(Startup, setup)
         .add_systems(Update, check_response)

@@ -133,15 +133,15 @@ impl AiModelBuilder {
     /// Enable progress tracking for model downloads.
     ///
     /// If not called, progress updates will be viewed on the terminal only.
-    pub fn with_progress(mut self) -> Self {
+    pub fn with_progress_tracking(mut self) -> Self {
         let (tx, rx) = crossbeam_channel::unbounded::<ModelDownloadProgress>();
         self.progress_chan_tx = Some(tx);
         self.progress_chan_rx = Some(rx);
         self
     }
 
-    /// Extract the progress receiver after enabling with_progress().
-    /// Returns None if with_progress() was not called.
+    /// Extract the progress receiver after enabling with_progress_tracking().
+    /// Returns None if with_progress_tracking() was not called.
     pub fn take_progress_receiver(
         &mut self,
     ) -> Option<crossbeam_channel::Receiver<ModelDownloadProgress>> {

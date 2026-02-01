@@ -23,7 +23,7 @@ fn setup_ai_plugin() -> AIDialoguePlugin {
     // Use async builder with progress tracking (model loads in background)
     let builder = AiModelBuilder::new()
         .with_seed(42)
-        .with_progress();
+        .with_progress_tracking();
 
     AIDialoguePlugin::with_builder(builder)
 }

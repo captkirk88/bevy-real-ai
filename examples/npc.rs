@@ -27,7 +27,7 @@ fn main() {
         .add_plugins(AIDialoguePlugin::with_builder(
             AiModelBuilder::new_with(ModelType::Llama)
                 .with_seed(42) // Optional: use fixed seed for consistent responses
-                .with_progress(), // Enable progress tracking for download UI
+                .with_progress_tracking(), // Enable progress tracking for download UI
         ).with_config(AiContextGatherConfig::default().with_radius(50.0)))
         .add_systems(Startup, setup_world)
         .add_systems(Update, (handle_input, display_dialogue, update_progress_bar))

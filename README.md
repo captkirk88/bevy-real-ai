@@ -12,8 +12,7 @@ Lightweight local-AI utilities and a Bevy dialogue plugin for integrating local 
 1. Add the crate to your project (example using cargo):
 
 ```bash
-# from your workspace root
-cargo run --example actions --release
+cargo add bevy_real_ai --features <gpu>
 ```
 
 2. In your Bevy app, add the dialogue plugin with a model builder:

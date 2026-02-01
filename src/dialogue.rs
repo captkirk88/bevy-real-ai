@@ -35,7 +35,8 @@ pub struct PendingModelLoad {
     /// Channel receiver for the built model result
     pub result_receiver: crossbeam_channel::Receiver<Result<Arc<dyn LocalAi>, String>>,
     /// Optional channel receiver for download progress updates
-    pub progress_receiver: Option<crossbeam_channel::Receiver<crate::models::ModelDownloadProgress>>,
+    pub progress_receiver:
+        Option<crossbeam_channel::Receiver<crate::models::ModelDownloadProgress>>,
 }
 
 /// Component for entities that can receive dialogue responses
@@ -79,29 +80,34 @@ impl Default for DialogueReceiver {
 #[derive(Debug, Clone)]
 pub enum DialogueRequestKind {
     /// Text message with a flag controlling whether gathered context should be included.
-    Text { message: String, include_context: bool },
-    Typed { 
-        user_message: String, 
-        schema_description: String, 
-        action_name: String 
+    Text {
+        message: String,
+        include_context: bool,
+    },
+    Typed {
+        user_message: String,
+        schema_description: String,
+        action_name: String,
     },
 }
 
 impl DialogueRequestKind {
-
     /// Create a text request that includes gathered context.
     pub fn text(message: String) -> Self {
-        Self::Text { message, include_context: true }
+        Self::Text {
+            message,
+            include_context: true,
+        }
     }
 
     /// Create a typed request from an AiParsable type.
-    pub fn typed<Action>(user_msg: String) -> Self 
-    where 
+    pub fn typed<Action>(user_msg: String) -> Self
+    where
         Action: AiParsable,
     {
-        Self::Typed { 
+        Self::Typed {
             user_message: user_msg, // Placeholder; should be set when creating the request
-            schema_description: Action::schema_description(), 
+            schema_description: Action::schema_description(),
             action_name: Action::action_name().to_string(),
         }
     }
@@ -115,7 +121,9 @@ impl DialogueRequestKind {
 
     pub fn include_context(&self) -> bool {
         match self {
-            DialogueRequestKind::Text { include_context, .. } => *include_context,
+            DialogueRequestKind::Text {
+                include_context, ..
+            } => *include_context,
             DialogueRequestKind::Typed { .. } => true,
         }
     }
@@ -129,20 +137,35 @@ pub struct DialogueRequest {
 
 impl DialogueRequest {
     pub fn text(entity: Entity, prompt: impl Into<String>) -> Self {
-        Self { entity, kind: DialogueRequestKind::Text { message: prompt.into(), include_context: true } }
+        Self {
+            entity,
+            kind: DialogueRequestKind::Text {
+                message: prompt.into(),
+                include_context: true,
+            },
+        }
     }
 
     /// Create a text request that will *not* include gathered context when sent to the model.
     pub fn text_no_context(entity: Entity, prompt: impl Into<String>) -> Self {
-        Self { entity, kind: DialogueRequestKind::Text { message: prompt.into(), include_context: false } }
+        Self {
+            entity,
+            kind: DialogueRequestKind::Text {
+                message: prompt.into(),
+                include_context: false,
+            },
+        }
     }
 
     /// Create a typed request with schema description.
-    pub fn typed<Action>(entity: Entity, user_message: impl ToString) -> Self 
+    pub fn typed<Action>(entity: Entity, user_message: impl ToString) -> Self
     where
         Action: AiParsable,
     {
-        Self { entity, kind: DialogueRequestKind::typed::<Action>(user_message.to_string()) }
+        Self {
+            entity,
+            kind: DialogueRequestKind::typed::<Action>(user_message.to_string()),
+        }
     }
 }
 
@@ -178,7 +201,10 @@ impl DialogueRequestQueue {
 
     pub fn push(&mut self, request: DialogueRequest) {
         let _lock = self.mutex.lock().unwrap();
-        debug!("Queued DialogueRequest for entity {:?}: {:?}", request.entity, request.kind);
+        debug!(
+            "Queued DialogueRequest for entity {:?}: {:?}",
+            request.entity, request.kind
+        );
         self.queue.push_back(request);
     }
 
@@ -206,7 +232,8 @@ impl<'w, 's> AiRequest<'w, 's> {
             "{}\n\nPlease respond in plain text only (no JSON or code blocks).",
             prompt.to_string()
         );
-        self.queue.push(DialogueRequest::text_no_context(ai_entity, user_message));
+        self.queue
+            .push(DialogueRequest::text_no_context(ai_entity, user_message));
     }
 
     /// Inquire with context gathering.
@@ -215,7 +242,8 @@ impl<'w, 's> AiRequest<'w, 's> {
             "{}\n\nPlease respond in plain text only (no JSON or code blocks).",
             prompt.to_string()
         );
-        self.queue.push(DialogueRequest::text(ai_entity, user_message));
+        self.queue
+            .push(DialogueRequest::text(ai_entity, user_message));
     }
 
     /// Ask for a typed [AiParsable] according to the schema of the provided `Action` type.
@@ -229,10 +257,8 @@ impl<'w, 's> AiRequest<'w, 's> {
             prompt.to_string(),
             schema_description
         );
-        self.queue.push(DialogueRequest::typed::<Action>(
-            ai_entity,
-            user_message,
-        ));
+        self.queue
+            .push(DialogueRequest::typed::<Action>(ai_entity, user_message));
     }
 }
 
@@ -279,8 +305,13 @@ pub trait LocalAi: Send + Sync + 'static {
         messages: &[AiMessage],
         session: Option<kalosm::language::BoxedChatSession>,
         _schema_description: &str,
-    ) -> Result<(serde_json::Value, Option<kalosm::language::BoxedChatSession>), String> 
-    {
+    ) -> Result<
+        (
+            serde_json::Value,
+            Option<kalosm::language::BoxedChatSession>,
+        ),
+        String,
+    > {
         let prompt_res = self.prompt_with_session(messages, session)?;
         match crate::parse::extract_and_parse_json::<serde_json::Value>(&prompt_res.response) {
             Ok(v) => Ok((v, prompt_res.session)),
@@ -302,13 +333,21 @@ impl LocalAiHandle {
     /// Create a new handle with a backend ready to use.
     pub fn new(backend: Arc<dyn LocalAi>) -> Self {
         let (tx, rx) = unbounded();
-        Self { backend: Some(backend), tx, rx }
+        Self {
+            backend: Some(backend),
+            tx,
+            rx,
+        }
     }
 
     /// Create a new handle without a backend (for async loading).
     pub fn new_empty() -> Self {
         let (tx, rx) = unbounded();
-        Self { backend: None, tx, rx }
+        Self {
+            backend: None,
+            tx,
+            rx,
+        }
     }
 
     pub fn is_loaded(&self) -> bool {
@@ -320,7 +359,7 @@ impl LocalAiHandle {
     }
 }
 
-use crate::context::{AiContextGatherConfig, ContextGatherRequest, AiSystemContextStore};
+use crate::context::{AiContextGatherConfig, AiSystemContextStore, ContextGatherRequest};
 
 /// Plugin that adds NPC dialogue capabilities with the provided LocalAi backend.
 pub struct AIDialoguePlugin {
@@ -393,7 +432,7 @@ impl Plugin for AIDialoguePlugin {
             warn!("AIDialoguePlugin: No backend or builder provided. Using MockAi.");
             LocalAiHandle::new(Arc::new(MockAi {}))
         };
-        
+
         // Insert the AI handle and other resources.
         app.insert_resource(ai_handle)
             .insert_resource(DialogueRequestQueue::default())
@@ -493,7 +532,6 @@ pub fn on_model_load_complete(ai_handle: Option<Res<LocalAiHandle>>) -> bool {
     ai_handle.map(|h| h.is_loaded()).unwrap_or(false)
 }
 
-
 /// Helper to build a model and track its progress using the resource-based system.
 /// Call this from a startup system or any system that needs to load a model asynchronously.
 pub fn start_model_load(
@@ -508,14 +546,12 @@ pub fn start_model_load(
     let (result_tx, result_rx) = crossbeam_channel::unbounded::<Result<Arc<dyn LocalAi>, String>>();
 
     // Spawn a thread that builds the model and sends the result
-    std::thread::spawn(move || {
-        match builder.build() {
-            Ok(arc_model) => {
-                let _ = result_tx.send(Ok(arc_model));
-            }
-            Err(e) => {
-                let _ = result_tx.send(Err(e));
-            }
+    std::thread::spawn(move || match builder.build() {
+        Ok(arc_model) => {
+            let _ = result_tx.send(Ok(arc_model));
+        }
+        Err(e) => {
+            let _ = result_tx.send(Err(e));
         }
     });
 
@@ -526,7 +562,6 @@ pub fn start_model_load(
         progress_receiver,
     });
 }
-
 
 /// System that handles outgoing requests: if NPC has preprogrammed response, respond immediately; else, spawn a thread to call the backend and send result to the response channel.
 /// Requests are kept in the queue until the model is loaded.
@@ -602,31 +637,46 @@ fn handle_dialogue_requests(
                         .unwrap_or_else(|e| format!("(ai error: {})", e));
                     (r, None)
                 }
-                DialogueRequestKind::Typed { schema_description, action_name, .. } => {
-                    match backend.prompt_typed(&msgs, None, schema_description) {
-                        Ok((val, _)) => {
-                            let mut actions: Vec<ActionPayload> = Vec::new();
-                            match &val {
-                                serde_json::Value::Object(map) => {
-                                    actions.push(crate::actions::ActionPayload { name: action_name.clone(), params: serde_json::Value::Object(map.clone()) });
-                                }
-                                serde_json::Value::Array(arr) => {
-                                    for v in arr.iter().cloned() {
-                                        actions.push(crate::actions::ActionPayload { name: action_name.clone(), params: v });
-                                    }
-                                }
-                                _ => {}
+                DialogueRequestKind::Typed {
+                    schema_description,
+                    action_name,
+                    ..
+                } => match backend.prompt_typed(&msgs, None, schema_description) {
+                    Ok((val, _)) => {
+                        let mut actions: Vec<ActionPayload> = Vec::new();
+                        match &val {
+                            serde_json::Value::Object(map) => {
+                                actions.push(crate::actions::ActionPayload {
+                                    name: action_name.clone(),
+                                    params: serde_json::Value::Object(map.clone()),
+                                });
                             }
-                            let s = serde_json::to_string(&val).unwrap_or_else(|_| "(ai error: failed to serialize typed response)".to_string());
-                            (s, Some(actions))
+                            serde_json::Value::Array(arr) => {
+                                for v in arr.iter().cloned() {
+                                    actions.push(crate::actions::ActionPayload {
+                                        name: action_name.clone(),
+                                        params: v,
+                                    });
+                                }
+                            }
+                            _ => {}
                         }
-                        Err(e) => (format!("(ai error: {})", e), None),
+                        let s = serde_json::to_string(&val).unwrap_or_else(|_| {
+                            "(ai error: failed to serialize typed response)".to_string()
+                        });
+                        (s, Some(actions))
                     }
-                }
+                    Err(e) => (format!("(ai error: {})", e), None),
+                },
             };
 
             let _ = tx
-                .send_async(DialogueResponse { entity, response: result, kind, actions: actions_opt })
+                .send_async(DialogueResponse {
+                    entity,
+                    response: result,
+                    kind,
+                    actions: actions_opt,
+                })
                 .await;
         });
     }
@@ -653,33 +703,39 @@ fn poll_responses_receiver(
                         match &resp.kind {
                             DialogueRequestKind::Typed { action_name, .. } => {
                                 // Wrap the object as an action with the typed action name
-                                actions.push(crate::actions::ActionPayload { name: action_name.clone(), params: serde_json::Value::Object(map) });
+                                actions.push(crate::actions::ActionPayload {
+                                    name: action_name.clone(),
+                                    params: serde_json::Value::Object(map),
+                                });
                             }
                             _ => {
                                 if let Some(serde_json::Value::String(_)) = map.get("name") {
-                                    if let Some(action) = crate::actions::value_to_action(serde_json::Value::Object(map)) {
+                                    if let Some(action) = crate::actions::value_to_action(
+                                        serde_json::Value::Object(map),
+                                    ) {
                                         actions.push(action);
                                     }
                                 }
                             }
                         }
                     }
-                    serde_json::Value::Array(arr) => {
-                        match &resp.kind {
-                            DialogueRequestKind::Typed { action_name, .. } => {
-                                for v in arr.into_iter() {
-                                    actions.push(crate::actions::ActionPayload { name: action_name.clone(), params: v });
-                                }
+                    serde_json::Value::Array(arr) => match &resp.kind {
+                        DialogueRequestKind::Typed { action_name, .. } => {
+                            for v in arr.into_iter() {
+                                actions.push(crate::actions::ActionPayload {
+                                    name: action_name.clone(),
+                                    params: v,
+                                });
                             }
-                            _ => {
-                                for v in arr.into_iter() {
-                                    if let Some(action) = crate::actions::value_to_action(v) {
-                                        actions.push(action);
-                                    }
+                        }
+                        _ => {
+                            for v in arr.into_iter() {
+                                if let Some(action) = crate::actions::value_to_action(v) {
+                                    actions.push(action);
                                 }
                             }
                         }
-                    }
+                    },
                     _ => {}
                 }
             }
@@ -691,7 +747,10 @@ fn poll_responses_receiver(
                 };
 
                 // Log for debugging so we can see what was parsed and enqueued
-                debug!("Enqueuing AI action '{}' for entity {:?} with params: {}", action.name, resp.entity, action.params);
+                debug!(
+                    "Enqueuing AI action '{}' for entity {:?} with params: {}",
+                    action.name, resp.entity, action.params
+                );
 
                 // Push into pending actions resource so the world-runner can execute handlers
                 if let Some(p) = pending.as_mut() {
@@ -709,8 +768,6 @@ fn poll_responses_receiver(
         }
     }
 }
-
-
 
 /// A very small mock AI backend used by default and for tests.
 pub struct MockAi {}

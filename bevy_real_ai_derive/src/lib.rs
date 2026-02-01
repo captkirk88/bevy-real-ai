@@ -6,7 +6,7 @@
 
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{parse_macro_input, Data, DeriveInput, Fields};
+use syn::{Data, DeriveInput, Fields, parse_macro_input};
 
 /// Convert a CamelCase or PascalCase string to snake_case.
 fn to_snake_case(s: &str) -> String {
@@ -116,7 +116,10 @@ pub fn derive_ai_action(input: TokenStream) -> TokenStream {
                     })
                     .collect();
                 let types: Vec<_> = fields.named.iter().map(|f| &f.ty).collect();
-                (quote! { #(#inits),* }, quote! { #(#types: std::default::Default),* })
+                (
+                    quote! { #(#inits),* },
+                    quote! { #(#types: std::default::Default),* },
+                )
             }
             _ => (quote! {}, quote! {}),
         },

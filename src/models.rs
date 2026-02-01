@@ -383,7 +383,11 @@ impl AIModel {
         parser: P,
     ) -> Result<(T, Option<kalosm::language::BoxedChatSession>), String>
     where
-        P: kalosm::language::Parser<Output = T> + kalosm::language::CreateParserState + Send + Sync + 'static,
+        P: kalosm::language::Parser<Output = T>
+            + kalosm::language::CreateParserState
+            + Send
+            + Sync
+            + 'static,
         T: Clone + Send + 'static,
     {
         // Synchronously call the regular prompt path
@@ -475,7 +479,10 @@ impl AIModel {
             // (if the backend supports it in the future).
             let response = if let Some(seed) = self.seed {
                 let sampler = GenerationParameters::default().with_seed(seed);
-                chat.add_message(&full_prompt).with_sampler(sampler).all_text().await
+                chat.add_message(&full_prompt)
+                    .with_sampler(sampler)
+                    .all_text()
+                    .await
             } else {
                 chat.add_message(&full_prompt).all_text().await
             };
@@ -552,7 +559,7 @@ impl LocalAi for AIModel {
             }
             let combined_system_prompt = system_parts.join("\n\n");
             chat = chat.with_system_prompt(&combined_system_prompt);
-            
+
             // Build user prompt from User messages only (history is in the session)
             let mut conversation_parts = Vec::new();
             for message in messages {
@@ -609,17 +616,32 @@ impl LocalAi for AIModel {
         messages: &[AiMessage],
         session: Option<kalosm::language::BoxedChatSession>,
         _schema_description: &str,
-    ) -> Result<(serde_json::Value, Option<kalosm::language::BoxedChatSession>), String> {
+    ) -> Result<
+        (
+            serde_json::Value,
+            Option<kalosm::language::BoxedChatSession>,
+        ),
+        String,
+    > {
         // Fast path: use the kalosm-aware JsonParser to extract JSON directly.
         use crate::parse::json_parser::JsonParser;
 
-        match self.prompt_with_parser::<JsonParser, serde_json::Value>(messages, session.clone(), JsonParser) {
+        match self.prompt_with_parser::<JsonParser, serde_json::Value>(
+            messages,
+            session.clone(),
+            JsonParser,
+        ) {
             Ok((v, sess)) => Ok((v, sess)),
             Err(e) => {
                 // Fall back to the generic post-generation JSON extraction
-                eprintln!("JsonParser path failed: {}. Falling back to generic extraction.", e);
+                eprintln!(
+                    "JsonParser path failed: {}. Falling back to generic extraction.",
+                    e
+                );
                 let prompt_res = self.prompt_with_session(messages, session)?;
-                match crate::parse::extract_and_parse_json::<serde_json::Value>(&prompt_res.response) {
+                match crate::parse::extract_and_parse_json::<serde_json::Value>(
+                    &prompt_res.response,
+                ) {
                     Ok(v) => Ok((v, prompt_res.session)),
                     Err(err) => Err(err),
                 }
@@ -641,7 +663,11 @@ pub fn prompt_with_parser_from_backend<P, T>(
     parser: P,
 ) -> Result<(T, Option<kalosm::language::BoxedChatSession>), String>
 where
-    P: kalosm::language::Parser<Output = T> + kalosm::language::CreateParserState + Send + Sync + 'static,
+    P: kalosm::language::Parser<Output = T>
+        + kalosm::language::CreateParserState
+        + Send
+        + Sync
+        + 'static,
     T: Clone + Send + 'static,
 {
     // Use the object-safe `prompt_with_session` so we don't need to downcast backends.
@@ -669,7 +695,11 @@ pub fn prompt_with_typed_from_backend<P, T>(
     parser: P,
 ) -> Result<(T, Option<kalosm::language::BoxedChatSession>), String>
 where
-    P: kalosm::language::Parser<Output = T> + kalosm::language::CreateParserState + Send + Sync + 'static,
+    P: kalosm::language::Parser<Output = T>
+        + kalosm::language::CreateParserState
+        + Send
+        + Sync
+        + 'static,
     T: Clone + Send + 'static + serde::de::DeserializeOwned + crate::parse::AiParsable,
 {
     // First, ask the backend to produce a typed JSON value if it supports optimized paths.
@@ -678,7 +708,10 @@ where
             Ok(parsed) => return Ok((parsed, sess)),
             Err(e) => {
                 // Fall through to post-generation parsing if conversion fails
-                eprintln!("Typed parse failed: {}. Falling back to post-generation parsing.", e);
+                eprintln!(
+                    "Typed parse failed: {}. Falling back to post-generation parsing.",
+                    e
+                );
             }
         },
         Err(_) => {

@@ -17,10 +17,10 @@
 //!     .run();
 //! ```
 
-use bevy::prelude::*;
 use crate::actions::{AiActionRegistry, IntoActionPayload};
 use crate::dialogue::AIDialoguePlugin;
 use crate::models::{AiModelBuilder, ModelType};
+use bevy::prelude::*;
 
 /// Extension trait for `App` that provides convenient AI setup methods.
 pub trait AiAppExt {
@@ -92,7 +92,10 @@ pub trait AiAppExt {
 
 impl AiAppExt for App {
     fn use_ai(&mut self, model_type: ModelType) -> &mut Self {
-        let builder = AiModelBuilder::new_with(model_type).with_seed(0).include_default_context(true).with_progress_tracking();
+        let builder = AiModelBuilder::new_with(model_type)
+            .with_seed(0)
+            .include_default_context(true)
+            .with_progress_tracking();
         self.add_plugins(AIDialoguePlugin::with_builder(builder));
         self
     }
@@ -108,11 +111,12 @@ impl AiAppExt for App {
         S: bevy::ecs::system::IntoSystem<In<T>, (), M> + 'static,
     {
         let action_name = T::action_name();
-        
+
         // Ensure registry exists (it should if AIDialoguePlugin was added)
-        self.world_mut().get_resource_or_init::<AiActionRegistry>()
+        self.world_mut()
+            .get_resource_or_init::<AiActionRegistry>()
             .register_typed::<T, S, M>(action_name, system);
-        
+
         self
     }
 
@@ -124,11 +128,11 @@ impl AiAppExt for App {
         if self.world().get_resource::<AiActionRegistry>().is_none() {
             self.insert_resource(AiActionRegistry::default());
         }
-        
+
         self.world_mut()
             .resource_mut::<AiActionRegistry>()
             .register(name, system);
-        
+
         self
     }
 }

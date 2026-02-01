@@ -21,9 +21,7 @@ fn main() {
 
 fn setup_ai_plugin() -> AIDialoguePlugin {
     // Use async builder with progress tracking (model loads in background)
-    let builder = AiModelBuilder::new()
-        .with_seed(42)
-        .with_progress_tracking();
+    let builder = AiModelBuilder::new().with_seed(42).with_progress_tracking();
 
     AIDialoguePlugin::with_builder(builder)
 }
@@ -43,10 +41,9 @@ fn setup(mut commands: Commands, mut request_queue: AiRequest) {
     println!("Waiting for model to load in background...");
 
     // Spawn an entity that can speak and receive dialogue
-    let entity = commands.spawn((
-        DialogueReceiver::new(),
-        bevy_real_ai::context::AI,
-    )).id();
+    let entity = commands
+        .spawn((DialogueReceiver::new(), bevy_real_ai::context::AI))
+        .id();
 
     // Queue the request immediately - it will be processed once the model loads
     println!("Queuing dialogue request (will be processed when model is ready)...");
@@ -63,7 +60,7 @@ fn check_response(
             println!("\n=== AI Response ===");
             println!("{}", response);
             println!("===================\n");
-            
+
             // Exit after receiving response
             commands.write_message(AppExit::Success);
         }

@@ -1,6 +1,5 @@
 use bevy::prelude::Component;
 
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum AiMessage {
     /// System-level message (context, instructions, etc)
@@ -52,13 +51,12 @@ impl std::fmt::Display for AiMessage {
         match self {
             AiMessage::System(text) => write!(f, "System: {}", text),
             AiMessage::User(text) => write!(f, "User: {}", text),
-            #[allow(deprecated)] AiMessage::Assistant(text) => write!(f, "Assistant: {}", text),
+            #[allow(deprecated)]
+            AiMessage::Assistant(text) => write!(f, "Assistant: {}", text),
             AiMessage::Payload(p) => write!(f, "Payload: {} {}", p.name, p.params),
         }
     }
 }
-
-
 
 /// Sentinel used to suppress the default system context for a single request.
 pub const NO_DEFAULT_SYSTEM_CONTEXT: &str = "Forget the context.";
@@ -93,13 +91,18 @@ impl ChatHistory {
     }
 
     /// Get a clone of the inner Arc for thread-safe access.
-    pub fn session_handle(&self) -> std::sync::Arc<std::sync::Mutex<Option<kalosm::language::BoxedChatSession>>> {
+    pub fn session_handle(
+        &self,
+    ) -> std::sync::Arc<std::sync::Mutex<Option<kalosm::language::BoxedChatSession>>> {
         self.session.clone()
     }
 
     /// Take the session out (for use in prompt), leaving None in its place.
     pub fn take_session(&self) -> Option<kalosm::language::BoxedChatSession> {
-        self.session.lock().expect("ChatHistory mutex poisoned").take()
+        self.session
+            .lock()
+            .expect("ChatHistory mutex poisoned")
+            .take()
     }
 
     /// Put a session back after prompting.
@@ -109,7 +112,10 @@ impl ChatHistory {
 
     /// Check if there's an active session.
     pub fn has_session(&self) -> bool {
-        self.session.lock().expect("ChatHistory mutex poisoned").is_some()
+        self.session
+            .lock()
+            .expect("ChatHistory mutex poisoned")
+            .is_some()
     }
 }
 
@@ -137,7 +143,9 @@ impl std::fmt::Debug for ChatHistory {
 impl AiContext {
     /// Create a new empty context.
     pub fn new() -> Self {
-        Self { messages: Vec::new() }
+        Self {
+            messages: Vec::new(),
+        }
     }
 
     /// Add context as a system message from an opaque text string.
@@ -155,4 +163,3 @@ impl AiContext {
         self.messages.clear();
     }
 }
-

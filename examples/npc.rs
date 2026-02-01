@@ -21,7 +21,10 @@ use common::FpsPlugin;
 /// Questions available for the player to ask (label, prompt)
 static QUESTIONS: &[(&str, &str)] = &[
     ("Who is nearby?", "Who is nearby and what do they have?"),
-    ("Where's a healing potion?", "Where can I find a healing potion?"),
+    (
+        "Where's a healing potion?",
+        "Where can I find a healing potion?",
+    ),
     ("What weapons?", "What weapons are available?"),
 ];
 
@@ -29,13 +32,19 @@ fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
         .add_plugins(FpsPlugin)
-        .add_plugins(AIDialoguePlugin::with_builder(
-            AiModelBuilder::new_with(ModelType::Llama)
-                .with_seed(42) // Optional: use fixed seed for consistent responses
-                .with_progress_tracking(), // Enable progress tracking for download UI
-        ).with_config(AiContextGatherConfig::default().with_radius(50.0)))
+        .add_plugins(
+            AIDialoguePlugin::with_builder(
+                AiModelBuilder::new_with(ModelType::Llama)
+                    .with_seed(42) // Optional: use fixed seed for consistent responses
+                    .with_progress_tracking(), // Enable progress tracking for download UI
+            )
+            .with_config(AiContextGatherConfig::default().with_radius(50.0)),
+        )
         .add_systems(Startup, setup_world)
-        .add_systems(Update, (handle_input, display_dialogue, update_progress_bar))
+        .add_systems(
+            Update,
+            (handle_input, display_dialogue, update_progress_bar),
+        )
         .add_observer(on_model_download_progress)
         .add_observer(on_model_load_complete)
         .run();
@@ -108,7 +117,11 @@ fn setup_world(mut commands: Commands, mut store: ResMut<AiSystemContextStore>) 
             description: "A knowledgeable woman".into(),
         },
         Inventory {
-            items: vec!["healing potion".into(), "antidote".into(), "rare mushroom".into()],
+            items: vec![
+                "healing potion".into(),
+                "antidote".into(),
+                "rare mushroom".into(),
+            ],
         },
         Transform::from_translation(Vec3::new(-30.0, 20.0, 0.0)),
         AIAware,
@@ -215,7 +228,7 @@ fn gather_npc_context(
     npcs: Query<(Entity, &Npc, &Inventory, &Transform), With<AIAware>>,
 ) -> Option<bevy_real_ai::rag::AiMessage> {
     let nearby_entities = ai_entity.collect_nearby();
-    
+
     let summaries: Vec<String> = npcs
         .iter()
         .filter(|(ent, _, _, _)| nearby_entities.contains(ent))
@@ -258,7 +271,7 @@ fn handle_input(
     if let Some(prompt) = prompt {
         // Gather context before asking
         context_request.request(player_entity);
-        
+
         info!("Asking: {}", prompt);
         request_queue.push(DialogueRequest::text(player_entity, prompt.to_string()));
     }
@@ -294,7 +307,7 @@ fn on_model_download_progress(
     let Ok(mut progress) = progress_query.single_mut() else {
         return;
     };
-    
+
     match event.state {
         DownloadState::InProgress => {
             if let Some(p) = event.progress {
@@ -322,12 +335,12 @@ fn on_model_load_complete(
     let event = trigger.event();
     if event.success {
         info!("Model '{}' loaded successfully!", event.model_name);
-        
+
         // Despawn the progress bar UI - we no longer need it
         if let Ok(entity) = progress_ui_query.single() {
             commands.entity(entity).despawn();
         }
-        
+
         // Update the dialogue UI with instructions
         if let Ok(mut text) = ui_query.single_mut() {
             let options: String = QUESTIONS
@@ -358,7 +371,7 @@ fn update_progress_bar(
     let Ok(progress) = progress_query.single() else {
         return; // Progress entity was despawned
     };
-    
+
     // Update progress bar fill width (progress is 0.0-1.0)
     if let Ok(mut fill_node) = fill_query.single_mut() {
         fill_node.width = Val::Percent(progress.progress * 100.0);

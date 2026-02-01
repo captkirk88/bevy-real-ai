@@ -24,8 +24,7 @@ pub use bevy_real_ai_derive::AiAction;
 pub mod prelude {
     pub use crate::AiAction;
     pub use crate::actions::{
-        ActionPayload, AiActionEvent, AiActionRegistry, PendingAiActions,
-        prompt_typed_action,
+        ActionPayload, AiActionEvent, AiActionRegistry, PendingAiActions, prompt_typed_action,
     };
     pub use crate::app_ext::AiAppExt;
     pub use crate::context::{

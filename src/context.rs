@@ -1,5 +1,5 @@
+use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
-use bevy::ecs::system::{SystemParam};
 
 /// Marker component that indicates an entity should be considered for AI context gathering.
 /// Only entities with this component will be scanned for nearby context information.
@@ -40,7 +40,10 @@ impl AiContextGatherConfig {
 
 impl Default for AiContextGatherConfig {
     fn default() -> Self {
-        Self { radius: 10.0, max_docs: 8 }
+        Self {
+            radius: 10.0,
+            max_docs: 8,
+        }
     }
 }
 
@@ -145,11 +148,13 @@ impl<'w, 's> AiEntity<'w, 's> {
     /// Get all nearby AIAware entities within the gather radius as set in `AiContextGatherConfig` resource.
     /// Returns a vector of entities sorted by proximity (nearest first).
     pub fn collect_nearby(&self) -> Vec<Entity> {
-        let mut nearby: Vec<(Entity, f32)> = self.aware_entities
+        let mut nearby: Vec<(Entity, f32)> = self
+            .aware_entities
             .iter()
             .filter_map(|(ent, transform)| {
                 if self.is_nearby(ent, transform.translation) {
-                    let distance = self.position()
+                    let distance = self
+                        .position()
                         .map(|pos| pos.distance(transform.translation))
                         .unwrap_or(f32::MAX);
                     Some((ent, distance))
@@ -158,14 +163,15 @@ impl<'w, 's> AiEntity<'w, 's> {
                 }
             })
             .collect();
-        
+
         // Sort by distance (nearest first)
         nearby.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
         nearby.into_iter().map(|(ent, _)| ent).collect()
     }
 
     pub fn collect_nearby_dist(&self, radius: f32) -> Vec<(Entity, f32)> {
-        let mut nearby: Vec<(Entity, f32)> = self.aware_entities
+        let mut nearby: Vec<(Entity, f32)> = self
+            .aware_entities
             .iter()
             .filter_map(|(ent, transform)| {
                 if ent != self.current.0 {
@@ -179,7 +185,7 @@ impl<'w, 's> AiEntity<'w, 's> {
                 None
             })
             .collect();
-        
+
         // Sort by distance (nearest first)
         nearby.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
         nearby
@@ -188,7 +194,7 @@ impl<'w, 's> AiEntity<'w, 's> {
 
 impl<'w, 's> std::ops::Deref for AiEntity<'w, 's> {
     type Target = Entity;
-    
+
     fn deref(&self) -> &Self::Target {
         &self.current.0
     }
@@ -214,9 +220,9 @@ impl AiSystemContextStore {
     }
 
     /// Add a context-gathering system to the store.
-    /// 
+    ///
     /// The system should return an `Option<AiMessage>` and can use any valid Bevy system parameters.
-    /// 
+    ///
     /// # Example
     /// ```ignore
     /// store.add_system(|ai_entity: AiEntity, query: Query<&MyComponent>| {
@@ -224,7 +230,10 @@ impl AiSystemContextStore {
     ///     Some(AiMessage::system("context"))
     /// });
     /// ```
-    pub fn add_system<M>(&mut self, system: impl IntoSystem<(), Option<crate::rag::AiMessage>, M> + 'static) {
+    pub fn add_system<M>(
+        &mut self,
+        system: impl IntoSystem<(), Option<crate::rag::AiMessage>, M> + 'static,
+    ) {
         self.systems.push(Box::new(IntoSystem::into_system(system)));
     }
 
@@ -275,7 +284,7 @@ pub fn gather_on_request_world(world: &mut World) {
 
                 // Initialize the system
                 system.initialize(world);
-                
+
                 // Run the system directly with &mut World
                 let result = system.run((), world);
 
@@ -312,4 +321,3 @@ pub fn gather_on_request_world(world: &mut World) {
         world.entity_mut(ent).insert(context);
     }
 }
-

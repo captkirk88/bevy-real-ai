@@ -274,7 +274,9 @@ fn try_repair_json(input: &str) -> String {
                 in_string = !in_string;
                 continue;
             }
-            if in_string { continue; }
+            if in_string {
+                continue;
+            }
             if ch == '}' {
                 // Insert a closing ']' right after this brace
                 let mut repaired = String::with_capacity(input.len() + 2);
@@ -355,7 +357,8 @@ mod tests {
 
     #[test]
     fn test_parse_json_embedded_in_text() {
-        let response = r#"Sure, here's what you asked for: {"name": "test", "value": 42} Hope that helps!"#;
+        let response =
+            r#"Sure, here's what you asked for: {"name": "test", "value": 42} Hope that helps!"#;
         let result: TestStruct = extract_and_parse_json(response).expect("should parse");
         assert_eq!(result.name, "test");
         assert_eq!(result.value, 42);
@@ -379,7 +382,8 @@ mod tests {
         // Try repair
         let repaired = try_repair_json(&extracted);
         // Now repaired should parse
-        let v: serde_json::Value = serde_json::from_str(&repaired).expect("repaired json should parse");
+        let v: serde_json::Value =
+            serde_json::from_str(&repaired).expect("repaired json should parse");
         assert_eq!(v["name"], "spawn");
         assert_eq!(v["id"], "goblin_spawn");
         // Ensure actions is an array
@@ -389,7 +393,7 @@ mod tests {
 
 pub(crate) mod json_parser {
     use super::*;
-    use kalosm::language::{Parser, CreateParserState, ParseStatus, ParserError};
+    use kalosm::language::{CreateParserState, ParseStatus, Parser, ParserError};
     use std::borrow::Cow;
 
     /// A very small `Parser` implementation that extracts JSON from the accumulated
@@ -412,7 +416,11 @@ pub(crate) mod json_parser {
         type Output = serde_json::Value;
         type PartialState = JsonParserState;
 
-        fn parse<'a>(&self, state: &Self::PartialState, input: &'a [u8]) -> Result<ParseStatus<'a, Self::PartialState, Self::Output>, ParserError> {
+        fn parse<'a>(
+            &self,
+            state: &Self::PartialState,
+            input: &'a [u8],
+        ) -> Result<ParseStatus<'a, Self::PartialState, Self::Output>, ParserError> {
             // Combine previous buffer and new input to search for JSON
             let mut combined = state.buffer.clone();
             combined.extend_from_slice(input);
@@ -426,10 +434,20 @@ pub(crate) mod json_parser {
                         if let Some(pos) = text.find(&json_str) {
                             let end = pos + json_str.len();
                             let buffer_len = state.buffer.len();
-                            let remaining = if end <= buffer_len { &input[0..0] } else { &input[end - buffer_len..] };
-                            return Ok(ParseStatus::Finished { result: v, remaining });
+                            let remaining = if end <= buffer_len {
+                                &input[0..0]
+                            } else {
+                                &input[end - buffer_len..]
+                            };
+                            return Ok(ParseStatus::Finished {
+                                result: v,
+                                remaining,
+                            });
                         }
-                        return Ok(ParseStatus::Finished { result: v, remaining: &input[0..0] });
+                        return Ok(ParseStatus::Finished {
+                            result: v,
+                            remaining: &input[0..0],
+                        });
                     }
                     Err(e) => return Err(ParserError::msg(format!("invalid json: {}", e))),
                 }
@@ -441,10 +459,20 @@ pub(crate) mod json_parser {
                     if let Some(pos) = text.find(&obj) {
                         let end = pos + obj.len();
                         let buffer_len = state.buffer.len();
-                        let remaining = if end <= buffer_len { &input[0..0] } else { &input[end - buffer_len..] };
-                        return Ok(ParseStatus::Finished { result: v, remaining });
+                        let remaining = if end <= buffer_len {
+                            &input[0..0]
+                        } else {
+                            &input[end - buffer_len..]
+                        };
+                        return Ok(ParseStatus::Finished {
+                            result: v,
+                            remaining,
+                        });
                     }
-                    return Ok(ParseStatus::Finished { result: v, remaining: &input[0..0] });
+                    return Ok(ParseStatus::Finished {
+                        result: v,
+                        remaining: &input[0..0],
+                    });
                 } else {
                     return Err(ParserError::msg("invalid json"));
                 }
@@ -474,7 +502,7 @@ pub(crate) mod json_parser {
             let parser = JsonParser;
             let state = parser.create_parser_state();
             let input = b"Some text before {\"name\": \"x\", \"value\": 3} trailing";
-            match parser.parse(&state, input).expect("parse") { 
+            match parser.parse(&state, input).expect("parse") {
                 ParseStatus::Finished { result, .. } => {
                     let s: TestStruct = serde_json::from_value(result).expect("deserialize");
                     assert_eq!(s.name, "x");

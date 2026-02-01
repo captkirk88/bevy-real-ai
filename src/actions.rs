@@ -1,5 +1,5 @@
-use serde_json::Value;
 use bevy::prelude::*;
+use serde_json::Value;
 use std::collections::HashMap;
 
 /// A generic action produced by the AI. `name` is the action identifier, and
@@ -41,7 +41,8 @@ impl ActionPayload {
     where
         T: serde::de::DeserializeOwned,
     {
-        self.get_raw(key).and_then(|v| serde_json::from_value(v.clone()).ok())
+        self.get_raw(key)
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
     }
 }
 
@@ -65,7 +66,10 @@ pub(crate) fn value_to_action(v: Value) -> Option<ActionPayload> {
     if let Value::Object(map) = v {
         if let Some(Value::String(name)) = map.get("name") {
             let params = map.get("params").cloned().unwrap_or(Value::Null);
-            return Some(ActionPayload { name: name.clone(), params });
+            return Some(ActionPayload {
+                name: name.clone(),
+                params,
+            });
         }
     }
     None
@@ -96,7 +100,9 @@ pub struct AiActionRegistry {
 
 impl AiActionRegistry {
     pub fn new() -> Self {
-        Self { handlers: HashMap::new() }
+        Self {
+            handlers: HashMap::new(),
+        }
     }
 
     /// Register a handler that receives the full `AiActionEvent` as input.
@@ -115,13 +121,13 @@ impl AiActionRegistry {
     {
         let inner_system = bevy::ecs::system::IntoSystem::into_system(system);
         let name_owned = name.to_string();
-        
+
         // Create a wrapper that implements AiActionHandlerDyn
         struct SystemWrapper<Sys> {
             system: Sys,
             initialized: bool,
         }
-        
+
         impl<Sys> AiActionHandlerDyn for SystemWrapper<Sys>
         where
             Sys: bevy::ecs::system::System<In = In<AiActionEvent>, Out = ()> + Send + Sync,
@@ -135,11 +141,14 @@ impl AiActionRegistry {
                 self.system.apply_deferred(world);
             }
         }
-        
-        self.handlers.insert(name_owned, Box::new(SystemWrapper {
-            system: inner_system,
-            initialized: false,
-        }));
+
+        self.handlers.insert(
+            name_owned,
+            Box::new(SystemWrapper {
+                system: inner_system,
+                initialized: false,
+            }),
+        );
     }
 
     /// Register a typed handler system for an action name.
@@ -165,7 +174,7 @@ impl AiActionRegistry {
         let inner_system = bevy::ecs::system::IntoSystem::into_system(system);
         let name_owned = name.to_string();
         let name_for_error = name.to_string();
-        
+
         // Create a wrapper that deserializes T and runs the inner system
         struct TypedSystemWrapper<T, Sys> {
             system: Sys,
@@ -173,7 +182,7 @@ impl AiActionRegistry {
             name: String,
             _marker: std::marker::PhantomData<T>,
         }
-        
+
         impl<T, Sys> AiActionHandlerDyn for TypedSystemWrapper<T, Sys>
         where
             T: 'static + Send + Sync + serde::de::DeserializeOwned,
@@ -190,18 +199,24 @@ impl AiActionRegistry {
                         self.system.apply_deferred(world);
                     }
                     Err(e) => {
-                        error!("Failed to deserialize typed action for {}: {}", self.name, e);
+                        error!(
+                            "Failed to deserialize typed action for {}: {}",
+                            self.name, e
+                        );
                     }
                 }
             }
         }
-        
-        self.handlers.insert(name_owned, Box::new(TypedSystemWrapper {
-            system: inner_system,
-            initialized: false,
-            name: name_for_error,
-            _marker: std::marker::PhantomData::<T>,
-        }));
+
+        self.handlers.insert(
+            name_owned,
+            Box::new(TypedSystemWrapper {
+                system: inner_system,
+                initialized: false,
+                name: name_for_error,
+                _marker: std::marker::PhantomData::<T>,
+            }),
+        );
     }
 
     /// Get a mutable reference to a handler by name, if any.
@@ -227,7 +242,10 @@ pub fn run_registered_actions_world(world: &mut World) {
     for evt in pending.into_iter() {
         world.resource_scope::<AiActionRegistry, _>(|world, mut registry| {
             if let Some(handler) = registry.get_mut(&evt.action.name) {
-                debug!("Executing handler '{}' for entity {:?}", evt.action.name, evt.entity);
+                debug!(
+                    "Executing handler '{}' for entity {:?}",
+                    evt.action.name, evt.entity
+                );
                 handler.run_with_action(evt, world);
             }
         });

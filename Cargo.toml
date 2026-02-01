@@ -10,6 +10,8 @@ readme = "README.md"
 categories = ["game-development", "artificial-intelligence"]
 keywords = ["bevy", "ai", "kalosm", "game-development"]
 
+exclude = ["*.nu", "*.sh", "*.ps1", "examples/*", "tests/*"]
+
 [workspace]
 members = [".", "bevy_real_ai_derive"]
 

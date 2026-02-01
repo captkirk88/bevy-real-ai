@@ -1,6 +1,5 @@
 use serde_json::Value;
 use bevy::prelude::*;
-use bevy::ecs::system::SystemParam;
 use std::collections::HashMap;
 
 /// A generic action produced by the AI. `name` is the action identifier, and
@@ -31,10 +30,10 @@ impl ActionPayload {
     }
 
     pub fn get_raw(&self, key: &str) -> Option<&Value> {
-        if let Value::Object(ref map) = self.params {
-            map.get(key)
-        } else {
-            None
+        match &self.params {
+            Value::Object(map) => map.get(key),
+            Value::Null => None,
+            _ => None,
         }
     }
 
@@ -62,8 +61,6 @@ pub struct AiActionEvent {
     pub action: ActionPayload,
 }
 
-
-
 pub(crate) fn value_to_action(v: Value) -> Option<ActionPayload> {
     if let Value::Object(map) = v {
         if let Some(Value::String(name)) = map.get("name") {
@@ -74,38 +71,16 @@ pub(crate) fn value_to_action(v: Value) -> Option<ActionPayload> {
     None
 }
 
-/// A boxed system invoked for a named AI action. Handlers run with `()` input
-/// and may read a temporary `CurrentAiAction` resource containing the action event.
-pub type AiActionHandler = Box<dyn System<In = (), Out = ()>>;
-
-/// Temporary resource made available while a handler system runs so it can access
-/// the action that triggered it.
-#[derive(Resource, Clone)]
-pub struct CurrentAiAction(pub AiActionEvent);
-
-/// System parameter providing easy access to the current action. Handlers can accept
-/// SystemParam providing easy access to the current action. Handlers can accept
-/// this parameter to access the triggering `AiActionEvent` and its `ActionPayload`.
-#[derive(SystemParam)]
-pub struct AiAction<'w, 's> {
-    pub current: Res<'w, CurrentAiAction>,
-    // use `'s` to satisfy SystemParam signature
-    _marker: std::marker::PhantomData<&'s ()>,
+/// A boxed, type-erased handler that can be fed an `AiActionEvent` and then run.
+/// This trait allows handlers to receive action data directly without needing
+/// a temporary resource.
+pub trait AiActionHandlerDyn: Send + Sync {
+    /// Run the handler with the given action event.
+    fn run_with_action(&mut self, event: AiActionEvent, world: &mut World);
 }
 
-impl<'w, 's> AiAction<'w, 's> {
-    pub fn event(&self) -> &AiActionEvent {
-        &self.current.0
-    }
-
-    pub fn payload(&self) -> &ActionPayload {
-        &self.current.0.action
-    }
-
-    pub fn entity(&self) -> Entity {
-        self.current.0.entity
-    }
-}
+/// Boxed handler type for the registry.
+pub type AiActionHandler = Box<dyn AiActionHandlerDyn>;
 
 /// Pending actions that have been parsed and await processing by registered handlers.
 #[derive(Resource, Default)]
@@ -113,7 +88,7 @@ pub struct PendingAiActions {
     pub actions: Vec<AiActionEvent>,
 }
 
-/// Registry mapping action names to boxed `System`s.
+/// Registry mapping action names to boxed handlers.
 #[derive(Resource, Default)]
 pub struct AiActionRegistry {
     handlers: HashMap<String, AiActionHandler>,
@@ -124,60 +99,115 @@ impl AiActionRegistry {
         Self { handlers: HashMap::new() }
     }
 
-    /// Register a handler system for an action name.
+    /// Register a handler that receives the full `AiActionEvent` as input.
     ///
-    /// The provided `system` must be convertible to a Bevy `System` that accepts
-    /// `()` input. The handler can then read `CurrentAiAction` as a `Res<CurrentAiAction>`.
+    /// The handler function receives `In<AiActionEvent>` plus any other system parameters.
+    ///
+    /// # Example
+    /// ```ignore
+    /// registry.register("my_action", |In(event): In<AiActionEvent>, mut commands: Commands| {
+    ///     // Handle the action
+    /// });
+    /// ```
     pub fn register<S, M>(&mut self, name: &str, system: S)
     where
-        S: IntoSystem<(), (), M> + 'static,
+        S: bevy::ecs::system::IntoSystem<In<AiActionEvent>, (), M> + 'static,
     {
-        self.handlers.insert(name.to_string(), Box::new(IntoSystem::into_system(system)));
+        let inner_system = bevy::ecs::system::IntoSystem::into_system(system);
+        let name_owned = name.to_string();
+        
+        // Create a wrapper that implements AiActionHandlerDyn
+        struct SystemWrapper<Sys> {
+            system: Sys,
+            initialized: bool,
+        }
+        
+        impl<Sys> AiActionHandlerDyn for SystemWrapper<Sys>
+        where
+            Sys: bevy::ecs::system::System<In = In<AiActionEvent>, Out = ()> + Send + Sync,
+        {
+            fn run_with_action(&mut self, event: AiActionEvent, world: &mut World) {
+                if !self.initialized {
+                    let _ = self.system.initialize(world);
+                    self.initialized = true;
+                }
+                let _ = self.system.run(event, world);
+                self.system.apply_deferred(world);
+            }
+        }
+        
+        self.handlers.insert(name_owned, Box::new(SystemWrapper {
+            system: inner_system,
+            initialized: false,
+        }));
     }
 
     /// Register a typed handler system for an action name.
     ///
     /// The provided `system` must be convertible to a Bevy `System` that accepts
-    /// `In<T>` input. The handler can then operate directly on the typed struct.
+    /// `In<T>` input where `T` is deserializable from the action's params.
+    /// The handler receives the deserialized typed struct directly.
+    ///
+    /// # Example
+    /// ```ignore
+    /// #[derive(Deserialize)]
+    /// struct SpawnAction { name: String, x: f32, y: f32 }
+    ///
+    /// registry.register_typed::<SpawnAction, _, _>("spawn_action", |In(action): In<SpawnAction>, mut commands: Commands| {
+    ///     commands.spawn(/* ... */);
+    /// });
+    /// ```
     pub fn register_typed<T, S, M>(&mut self, name: &str, system: S)
     where
         T: 'static + Send + Sync + serde::de::DeserializeOwned,
-        S: bevy::ecs::system::IntoSystem<bevy::ecs::system::In<T>, (), M> + 'static,
+        S: bevy::ecs::system::IntoSystem<In<T>, (), M> + 'static,
     {
-        use bevy::ecs::system::IntoSystem;
-        // Convert the user system into a concrete System type and capture it.
-        let mut user_system = IntoSystem::into_system(system);
-
-        // Own the name so it can be captured by the wrapper
+        let inner_system = bevy::ecs::system::IntoSystem::into_system(system);
         let name_owned = name.to_string();
-        let name_for_register = name_owned.clone();
-
-        // Wrapper is an exclusive system that reads CurrentAiAction, deserializes T,
-        // and runs the user system with T.
-        let wrapper = move |world: &mut World| {
-            if let Some(current) = world.get_resource::<CurrentAiAction>() {
-                let payload = &current.0.action.params;
-                match serde_json::from_value::<T>(payload.clone()) {
+        let name_for_error = name.to_string();
+        
+        // Create a wrapper that deserializes T and runs the inner system
+        struct TypedSystemWrapper<T, Sys> {
+            system: Sys,
+            initialized: bool,
+            name: String,
+            _marker: std::marker::PhantomData<T>,
+        }
+        
+        impl<T, Sys> AiActionHandlerDyn for TypedSystemWrapper<T, Sys>
+        where
+            T: 'static + Send + Sync + serde::de::DeserializeOwned,
+            Sys: bevy::ecs::system::System<In = In<T>, Out = ()> + Send + Sync,
+        {
+            fn run_with_action(&mut self, event: AiActionEvent, world: &mut World) {
+                match serde_json::from_value::<T>(event.action.params.clone()) {
                     Ok(typed) => {
-                        user_system.initialize(world);
-                        let _ = user_system.run(typed, world);
-                        user_system.apply_deferred(world);
+                        if !self.initialized {
+                            let _ = self.system.initialize(world);
+                            self.initialized = true;
+                        }
+                        let _ = self.system.run(typed, world);
+                        self.system.apply_deferred(world);
                     }
-                    Err(e) => bevy::log::error!("Failed to deserialize typed action for {}: {}", name_owned, e),
+                    Err(e) => {
+                        error!("Failed to deserialize typed action for {}: {}", self.name, e);
+                    }
                 }
             }
-        };
-
-        // Register the wrapper as a normal handler (it matches In=(), Out=()).
-        self.register(&name_for_register, wrapper);
+        }
+        
+        self.handlers.insert(name_owned, Box::new(TypedSystemWrapper {
+            system: inner_system,
+            initialized: false,
+            name: name_for_error,
+            _marker: std::marker::PhantomData::<T>,
+        }));
     }
 
-    /// Get a mutable reference to a handler system by name, if any.
+    /// Get a mutable reference to a handler by name, if any.
     pub fn get_mut(&mut self, name: &str) -> Option<&mut AiActionHandler> {
         self.handlers.get_mut(name)
     }
-
-
 }
 
 /// World-exclusive runner that executes handler systems for pending actions.
@@ -193,23 +223,13 @@ pub fn run_registered_actions_world(world: &mut World) {
         return;
     }
 
-    // For each action event, run any registered handler system with a temporary CurrentAiAction
+    // For each action event, run any registered handler
     for evt in pending.into_iter() {
         world.resource_scope::<AiActionRegistry, _>(|world, mut registry| {
-            // Insert the current action as a temporary resource so handlers can read it
-            world.insert_resource(CurrentAiAction(evt.clone()));
-
             if let Some(handler) = registry.get_mut(&evt.action.name) {
-                // Log the action execution for debugging
                 debug!("Executing handler '{}' for entity {:?}", evt.action.name, evt.entity);
-                // Initialize and run the handler (it operates with `()` input)
-                handler.initialize(world);
-                let _ = handler.run((), world);
-                handler.apply_deferred(world);
+                handler.run_with_action(evt, world);
             }
-
-            // Remove the temporary resource
-            world.remove_resource::<CurrentAiAction>();
         });
     }
 }
@@ -226,10 +246,10 @@ pub fn run_registered_actions_world(world: &mut World) {
 /// # Example
 /// ```ignore
 /// use bevy_real_ai::actions::prompt_typed_action;
-/// use bevy_real_ai::AiParse;
+/// use bevy_real_ai::AiAction;
 /// use serde::{Serialize, Deserialize};
 ///
-/// #[derive(Clone, Debug, Serialize, Deserialize, AiParse)]
+/// #[derive(Clone, Debug, Serialize, Deserialize, AiAction)]
 /// struct SpawnAction {
 ///     pub name: String,
 ///     pub x: i32,
@@ -249,7 +269,7 @@ pub fn prompt_typed_action<T>(
     user_message: &str,
     entity: Entity,
     pending: &mut PendingAiActions,
-) -> Result<(T,String), String>
+) -> Result<(T, String), String>
 where
     T: crate::parse::AiParsable + serde::de::DeserializeOwned,
 {

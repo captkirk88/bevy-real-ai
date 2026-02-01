@@ -9,7 +9,7 @@ use crate::actions::IntoActionPayload;
 
 /// Trait for types that can be parsed from AI responses.
 ///
-/// Implement this trait (typically via `#[derive(AiParse)]`) to enable automatic
+/// Implement this trait (typically via `#[derive(AiAction)]`) to enable automatic
 /// parsing of AI responses into your typed structs.
 pub trait AiParsable: IntoActionPayload + Clone + Send + Sync + 'static {
     /// Returns a human-readable description of the expected JSON schema.

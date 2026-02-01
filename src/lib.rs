@@ -17,12 +17,12 @@ pub use crate::test_helpers::{ask_ai_and_wait, assert_ai_response};
 pub mod context;
 
 // Re-export the derive macro
-pub use bevy_real_ai_derive::AiParse;
+pub use bevy_real_ai_derive::AiAction;
 
 pub mod prelude {
-    pub use crate::AiParse;
+    pub use crate::AiAction;
     pub use crate::actions::{
-        ActionPayload, AiAction, AiActionEvent, AiActionRegistry, PendingAiActions,
+        ActionPayload, AiActionEvent, AiActionRegistry, PendingAiActions,
         prompt_typed_action,
     };
     pub use crate::context::{

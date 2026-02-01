@@ -32,7 +32,7 @@ App::new()
 
 ## Examples
 
-- `examples/actions.rs` — demonstrates typed actions via `AiParse` and `prompt_typed_action`, and registering action handlers with `AiActionRegistry`.
+- `examples/actions.rs` — demonstrates typed actions via `AiAction` and `prompt_typed_action`, and registering action handlers with `AiActionRegistry`.
 - [typed_actions.rs](examples/typed_actions.rs) — shows typed parsing flows.
 - [basic.rs](examples/basic.rs) and [npc.rs](examples/npc.rs) — minimal dialogue and NPC examples.
 
@@ -50,10 +50,10 @@ cargo run --example actions --release
   - Use `AiRequest::ask_action::<T>(...)` to queue typed action prompts.
 
 - `prompt_typed_action::<T>(backend, prompt, entity, &mut pending)`
-  - Synchronously prompts the model with the typed schema derived from `T: AiParsable` (from `#[derive(AiParse)]`), parses the response into `T`, and queues it as an action.
+  - Synchronously prompts the model with the typed schema derived from `T: AiParsable` (from `#[derive(AiAction)]`), parses the response into `T`, and queues it as an action.
 
 - Typed action handlers
-  - Use the `#[derive(AiParse)]` macro on a `struct` to generate parsing and action conversion utilities. Register handlers using the auto-generated `register` method:
+  - Use the `#[derive(AiAction)]` macro on a `struct` to generate parsing and action conversion utilities. Register handlers using the auto-generated `register` method:
 
 ```rust
 SpawnEntityAction::register(&mut registry, |In(action): In<SpawnEntityAction>, mut cmds: Commands| {

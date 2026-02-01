@@ -4,15 +4,15 @@
 
 use bevy_real_ai::prelude::*;
 use bevy_real_ai::actions::{prompt_typed_action, PendingAiActions};
-use bevy_real_ai::AiParse;
+use bevy_real_ai::AiAction;
 use bevy::prelude::Entity;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 /// A typed struct representing a spawn action that the AI should produce.
-/// The `AiParse` derive automatically implements both `AiParsable` and `IntoActionPayload`.
+/// The `AiAction` derive automatically implements both `AiParsable` and `IntoActionPayload`.
 /// The action name is auto-generated as "spawn_action" (struct name in snake_case).
-#[derive(Clone, Debug, Serialize, Deserialize, AiParse)]
+#[derive(Clone, Debug, Serialize, Deserialize, AiAction)]
 struct SpawnAction {
     pub name: String,
     pub x: i32,

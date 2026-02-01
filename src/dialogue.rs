@@ -80,10 +80,32 @@ impl Default for DialogueReceiver {
 pub enum DialogueRequestKind {
     /// Text message with a flag controlling whether gathered context should be included.
     Text { message: String, include_context: bool },
-    Typed { user_message: String, schema_description: String, action_name: String },
+    Typed { 
+        user_message: String, 
+        schema_description: String, 
+        action_name: String 
+    },
 }
 
 impl DialogueRequestKind {
+
+    /// Create a text request that includes gathered context.
+    pub fn text(message: String) -> Self {
+        Self::Text { message, include_context: true }
+    }
+
+    /// Create a typed request from an AiParsable type.
+    pub fn typed<Action>(user_msg: String) -> Self 
+    where 
+        Action: AiParsable,
+    {
+        Self::Typed { 
+            user_message: user_msg, // Placeholder; should be set when creating the request
+            schema_description: Action::schema_description(), 
+            action_name: Action::action_name().to_string(),
+        }
+    }
+
     pub fn as_user_message(&self) -> &str {
         match self {
             DialogueRequestKind::Text { message, .. } => message.as_str(),
@@ -116,8 +138,11 @@ impl DialogueRequest {
     }
 
     /// Create a typed request with schema description.
-    pub fn typed(entity: Entity, user_message: impl Into<String>, schema_description: impl Into<String>, action_name: impl Into<String>) -> Self {
-        Self { entity, kind: DialogueRequestKind::Typed { user_message: user_message.into(), schema_description: schema_description.into(), action_name: action_name.into() } }
+    pub fn typed<Action>(entity: Entity, user_message: impl ToString) -> Self 
+    where
+        Action: AiParsable,
+    {
+        Self { entity, kind: DialogueRequestKind::typed::<Action>(user_message.to_string()) }
     }
 }
 
@@ -126,6 +151,8 @@ pub struct DialogueResponse {
     pub entity: Entity,
     pub response: String,
     pub kind: DialogueRequestKind,
+    /// Optional pre-parsed actions (when the response was produced as structured actions).
+    pub actions: Option<Vec<ActionPayload>>,
 }
 
 use std::collections::VecDeque;
@@ -187,7 +214,7 @@ impl<'w, 's> AiRequest<'w, 's> {
         self.queue.push(DialogueRequest::text(ai_entity, user_message));
     }
 
-    /// Ask for a typed action according to the schema of the provided `Action` type.
+    /// Ask for a typed [AiParsable] according to the schema of the provided `Action` type.
     pub fn ask_action<Action>(&mut self, ai_entity: Entity, prompt: impl ToString)
     where
         Action: AiParsable,
@@ -198,11 +225,9 @@ impl<'w, 's> AiRequest<'w, 's> {
             prompt.to_string(),
             schema_description
         );
-        self.queue.push(DialogueRequest::typed(
+        self.queue.push(DialogueRequest::typed::<Action>(
             ai_entity,
             user_message,
-            schema_description,
-            Action::action_name().to_string(),
         ));
     }
 }
@@ -522,6 +547,7 @@ fn handle_dialogue_requests(
                     entity: req.entity,
                     response: pre.clone(),
                     kind: req.kind.clone(),
+                    actions: None,
                 });
                 continue;
             }
@@ -564,22 +590,39 @@ fn handle_dialogue_requests(
         let kind = req.kind.clone();
 
         crate::models::TOKIO_RUNTIME.spawn(async move {
-            let result = match &kind {
+            // Compute both the textual response and any pre-parsed actions for typed requests
+            let (result, actions_opt) = match &kind {
                 DialogueRequestKind::Text { .. } => {
-                    backend
+                    let r = backend
                         .prompt(&msgs)
-                        .unwrap_or_else(|e| format!("(ai error: {})", e))
+                        .unwrap_or_else(|e| format!("(ai error: {})", e));
+                    (r, None)
                 }
-                DialogueRequestKind::Typed { schema_description, .. } => {
+                DialogueRequestKind::Typed { schema_description, action_name, .. } => {
                     match backend.prompt_typed(&msgs, None, schema_description) {
-                        Ok((val, _)) => serde_json::to_string(&val).unwrap_or_else(|_| "(ai error: failed to serialize typed response)".to_string()),
-                        Err(e) => format!("(ai error: {})", e),
+                        Ok((val, _)) => {
+                            let mut actions: Vec<ActionPayload> = Vec::new();
+                            match &val {
+                                serde_json::Value::Object(map) => {
+                                    actions.push(crate::actions::ActionPayload { name: action_name.clone(), params: serde_json::Value::Object(map.clone()) });
+                                }
+                                serde_json::Value::Array(arr) => {
+                                    for v in arr.iter().cloned() {
+                                        actions.push(crate::actions::ActionPayload { name: action_name.clone(), params: v });
+                                    }
+                                }
+                                _ => {}
+                            }
+                            let s = serde_json::to_string(&val).unwrap_or_else(|_| "(ai error: failed to serialize typed response)".to_string());
+                            (s, Some(actions))
+                        }
+                        Err(e) => (format!("(ai error: {})", e), None),
                     }
                 }
             };
 
             let _ = tx
-                .send_async(DialogueResponse { entity, response: result, kind })
+                .send_async(DialogueResponse { entity, response: result, kind, actions: actions_opt })
                 .await;
         });
     }
@@ -595,9 +638,12 @@ fn poll_responses_receiver(
     // Drain all available responses without blocking
     while let Ok(resp) = ai_handle.rx.try_recv() {
         if let Ok(mut receiver) = query.get_mut(resp.entity) {
-            // Attempt to interpret the entire response as JSON and convert to actions
+            // Prefer any pre-parsed actions provided on the response (set for typed requests), otherwise try to interpret the response text as JSON actions.
             let mut actions: Vec<ActionPayload> = Vec::new();
-            if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(&resp.response) {
+
+            if let Some(pre) = resp.actions.clone() {
+                actions = pre;
+            } else if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(&resp.response) {
                 match json_val {
                     serde_json::Value::Object(map) => {
                         match &resp.kind {
@@ -654,16 +700,6 @@ fn poll_responses_receiver(
 
             // Store parsed actions
             receiver.actions = actions;
-
-            // If this was a simple text request that explicitly excluded context, keep only the
-            // first paragraph of the response to avoid the model appending unrelated lists or
-            // context dumps. Otherwise keep the full response.
-            // let cleaned_response = match &resp.kind {
-            //     DialogueRequestKind::Text { include_context: false, .. } => {
-            //         resp.response.split("\n\n").next().unwrap_or(&resp.response).trim().to_string()
-            //     }
-            //     _ => resp.response.trim().to_string(),
-            // };
 
             receiver.last_response = Some(resp.response.trim().to_string());
         }

@@ -1,6 +1,6 @@
 //! Derive macros for bevy_real_ai typed parsing.
 //!
-//! Provides `#[derive(AiParse)]` which generates JSON parsing capabilities
+//! Provides `#[derive(AiAction)]` which generates JSON parsing capabilities
 //! for structs, allowing AI responses to be automatically converted into typed data
 //! and action payloads.
 
@@ -38,10 +38,10 @@ fn to_snake_case(s: &str) -> String {
 ///
 /// # Example
 /// ```ignore
-/// use bevy_real_ai_derive::AiParse;
+/// use bevy_real_ai_derive::AiAction;
 /// use serde::{Serialize, Deserialize};
 ///
-/// #[derive(Clone, Debug, Serialize, Deserialize, AiParse)]
+/// #[derive(Clone, Debug, Serialize, Deserialize, AiAction)]
 /// struct SpawnAction {
 ///     pub name: String,
 ///     pub x: f32,
@@ -54,8 +54,8 @@ fn to_snake_case(s: &str) -> String {
 /// // One way is to use with prompt_typed_action:
 /// prompt_typed_action::<SpawnAction>(&backend, "spawn a player at 0,0", entity, &mut pending)?;
 /// ```
-#[proc_macro_derive(AiParse)]
-pub fn derive_ai_parse(input: TokenStream) -> TokenStream {
+#[proc_macro_derive(AiAction)]
+pub fn derive_ai_action(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     let name = &input.ident;
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
@@ -102,6 +102,36 @@ pub fn derive_ai_parse(input: TokenStream) -> TokenStream {
 
     let struct_name_str = name.to_string();
     let action_name_str = to_snake_case(&struct_name_str);
+
+    // For named-field structs, prepare default initializers and type bounds for Default impl
+    let (default_inits, default_type_bounds) = match &input.data {
+        Data::Struct(data) => match &data.fields {
+            Fields::Named(fields) => {
+                let inits: Vec<_> = fields
+                    .named
+                    .iter()
+                    .map(|f| {
+                        let field_name = f.ident.as_ref().expect("Named field must have ident");
+                        quote! { #field_name: std::default::Default::default() }
+                    })
+                    .collect();
+                let types: Vec<_> = fields.named.iter().map(|f| &f.ty).collect();
+                (quote! { #(#inits),* }, quote! { #(#types: std::default::Default),* })
+            }
+            _ => (quote! {}, quote! {}),
+        },
+        _ => (quote! {}, quote! {}),
+    };
+
+    // Build the merged where clause for Default impl (include existing where predicates if present)
+    let default_where_clause = if default_type_bounds.to_string().trim().is_empty() {
+        quote! {}
+    } else if let Some(wc) = &input.generics.where_clause {
+        let preds = &wc.predicates;
+        quote! { where #preds, #default_type_bounds }
+    } else {
+        quote! { where #default_type_bounds }
+    };
 
     let expanded = quote! {
         impl #impl_generics bevy_real_ai::parse::AiParsable for #name #ty_generics #where_clause {
@@ -159,6 +189,13 @@ pub fn derive_ai_parse(input: TokenStream) -> TokenStream {
                     <Self as bevy_real_ai::actions::IntoActionPayload>::action_name(),
                     system,
                 );
+            }
+        }
+
+        // Implement Default using field defaults when applicable
+        impl #impl_generics std::default::Default for #name #ty_generics #default_where_clause {
+            fn default() -> Self {
+                Self { #default_inits }
             }
         }
     };

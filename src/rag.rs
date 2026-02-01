@@ -10,6 +10,8 @@ pub enum AiMessage {
     /// Assistant message (from AI)
     #[deprecated(note = "Assistant messages are not currently used in prompt construction")]
     Assistant(String),
+    /// A pre-parsed action payload (used to pass actions without reparsing text)
+    Payload(crate::actions::ActionPayload),
 }
 
 impl AiMessage {
@@ -32,6 +34,11 @@ impl AiMessage {
     pub fn assistant(text: &str) -> Self {
         AiMessage::Assistant(text.to_string())
     }
+
+    /// Create an AiMessage that contains a pre-parsed `ActionPayload`.
+    pub fn payload(action: crate::actions::ActionPayload) -> Self {
+        AiMessage::Payload(action)
+    }
 }
 
 impl From<String> for AiMessage {
@@ -46,6 +53,7 @@ impl std::fmt::Display for AiMessage {
             AiMessage::System(text) => write!(f, "System: {}", text),
             AiMessage::User(text) => write!(f, "User: {}", text),
             #[allow(deprecated)] AiMessage::Assistant(text) => write!(f, "Assistant: {}", text),
+            AiMessage::Payload(p) => write!(f, "Payload: {} {}", p.name, p.params),
         }
     }
 }

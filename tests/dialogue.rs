@@ -88,7 +88,7 @@ fn ai_action_block_is_parsed_and_stored() {
     // Register a registry handler that spawns TestSpawned so we can assert it ran
     {
         let mut registry = app.world_mut().resource_mut::<bevy_real_ai::actions::AiActionRegistry>();
-        registry.register("spawn_entity", move |mut cmds: Commands, _ctx: bevy_real_ai::actions::AiAction| {
+        registry.register("spawn_entity", move |In(_event): In<bevy_real_ai::actions::AiActionEvent>, mut cmds: Commands| {
             let _ = cmds.spawn((TestSpawned, Name::new("testspawn"), Transform::default()));
             // Optionally re-emit the original event for other systems if desired
             // cmds.trigger(ctx.event().clone());

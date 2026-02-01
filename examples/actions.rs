@@ -1,4 +1,4 @@
-//! Example demonstrating typed AI action parsing with our custom `AiParse` derive macro.
+//! Example demonstrating typed AI action parsing with our custom `AiAction` derive macro.
 //!
 //! Run with: `cargo run --example actions --release`
 //!
@@ -18,10 +18,10 @@ pub struct AiSpawned;
 struct ExamplePlayer(Entity);
 
 /// Typed struct for spawn actions - the AI will produce JSON matching this schema.
-/// The `AiParse` derive automatically implements both `AiParsable` (for JSON schema
+/// The `AiAction` derive automatically implements both `AiParsable` (for JSON schema
 /// generation and parsing) and `IntoActionPayload` (for action conversion).
 /// The action name is derived from the struct name in snake_case: "spawn_entity_action"
-#[derive(Clone, Debug, Serialize, Deserialize, AiParse)]
+#[derive(Clone, Debug, Serialize, Deserialize, AiAction)]
 struct SpawnEntityAction {
     pub prefab: String,
     pub x: f32,
@@ -58,12 +58,7 @@ fn setup(mut commands: Commands, mut registry: ResMut<AiActionRegistry>, mut req
         Transform::from_xyz(-2.5, 4.5, 9.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
 
-    let player = commands
-        .spawn((
-            DialogueReceiver::new(),
-            AI,
-        ))
-        .id();
+    let player = commands.spawn((DialogueReceiver::new(), AI)).id();
 
     // Store the player so the model-load observer can queue a request later
     commands.insert_resource(ExamplePlayer(player));
@@ -72,10 +67,10 @@ fn setup(mut commands: Commands, mut registry: ResMut<AiActionRegistry>, mut req
     // The handler receives the typed struct as In<SpawnEntityAction> and can use any Bevy system params.
     SpawnEntityAction::register(
         &mut registry,
-        |In(action): In<SpawnEntityAction>, mut cmds: Commands,
-                mut meshes: ResMut<Assets<Mesh>>,
-            mut materials: ResMut<Assets<StandardMaterial>>,
-    | {
+        |In(action): In<SpawnEntityAction>,
+         mut cmds: Commands,
+         mut meshes: ResMut<Assets<Mesh>>,
+         mut materials: ResMut<Assets<StandardMaterial>>| {
             cmds.spawn((
                 AiSpawned,
                 Name::new(format!("spawned:{}", action.prefab)),
@@ -98,10 +93,7 @@ fn setup(mut commands: Commands, mut registry: ResMut<AiActionRegistry>, mut req
         "Spawn a goblin enemy at position x=0.0 and y=0.0",
     );
 
-    request.ask_text(
-        player,
-        "Also, can you tell me a joke while you're at it?",
-    );
+    request.ask_text(player, "Also, can you tell me a joke while you're at it?");
 }
 
 /// Observer that queues a typed action request when the model finishes loading.

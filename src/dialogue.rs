@@ -161,12 +161,14 @@ use std::collections::VecDeque;
 #[derive(Resource, Default)]
 pub struct DialogueRequestQueue {
     queue: VecDeque<DialogueRequest>,
+    mutex: std::sync::Mutex<()>,
 }
 
 impl DialogueRequestQueue {
     pub fn new() -> Self {
         Self {
             queue: VecDeque::new(),
+            mutex: std::sync::Mutex::new(()),
         }
     }
 
@@ -175,11 +177,13 @@ impl DialogueRequestQueue {
     }
 
     pub fn push(&mut self, request: DialogueRequest) {
+        let _lock = self.mutex.lock().unwrap();
         debug!("Queued DialogueRequest for entity {:?}: {:?}", request.entity, request.kind);
         self.queue.push_back(request);
     }
 
     pub fn pop(&mut self) -> Option<DialogueRequest> {
+        let _lock = self.mutex.lock().unwrap();
         self.queue.pop_front()
     }
 }

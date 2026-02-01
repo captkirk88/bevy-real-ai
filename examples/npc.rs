@@ -11,8 +11,12 @@
 //! The demo automatically asks all questions once the model loads.
 //! You can also press 1-3 to ask questions manually.
 
+#[path = "common/mod.rs"]
+mod common;
+
 use bevy::prelude::*;
 use bevy_real_ai::prelude::*;
+use common::FpsPlugin;
 
 /// Questions available for the player to ask (label, prompt)
 static QUESTIONS: &[(&str, &str)] = &[
@@ -24,6 +28,7 @@ static QUESTIONS: &[(&str, &str)] = &[
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
+        .add_plugins(FpsPlugin)
         .add_plugins(AIDialoguePlugin::with_builder(
             AiModelBuilder::new_with(ModelType::Llama)
                 .with_seed(42) // Optional: use fixed seed for consistent responses

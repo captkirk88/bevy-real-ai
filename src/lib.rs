@@ -9,6 +9,8 @@ pub mod actions;
 
 pub mod parse;
 
+mod app_ext;
+
 // Test helpers (exposed to tests & dev tooling)
 pub mod test_helpers;
 
@@ -25,6 +27,7 @@ pub mod prelude {
         ActionPayload, AiActionEvent, AiActionRegistry, PendingAiActions,
         prompt_typed_action,
     };
+    pub use crate::app_ext::AiAppExt;
     pub use crate::context::{
         AI, AIAware, AiContextGatherConfig, AiEntity, AiSystemContextStore, ContextGatherRequest,
     };

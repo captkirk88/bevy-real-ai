@@ -6,8 +6,12 @@
 //! specific location. The response is automatically parsed into a typed struct
 //! and queued as an action for the registered handler.
 
+#[path = "common/mod.rs"]
+mod common;
+
 use bevy::prelude::*;
 use bevy_real_ai::prelude::*;
+use common::{FpsPlugin, print_fps};
 use serde::{Deserialize, Serialize};
 
 /// Marker component for spawned AI entities (recommended for tracking)
@@ -29,21 +33,50 @@ struct SpawnEntityAction {
 }
 
 fn main() {
-    App::new()
-        .add_plugins(DefaultPlugins)
-        // Use async model builder (loads in background)
-        .add_plugins(AIDialoguePlugin::with_builder(
+    let mut app = App::new();
+    app.add_plugins(DefaultPlugins)
+        .add_plugins(FpsPlugin)
+        // Simple AI setup using the App extension trait
+        .use_ai_with_builder(
             AiModelBuilder::new_with(ModelType::Llama)
                 .with_seed(42)
                 .with_progress_tracking(),
-        ))
+        )
+        // Register a spawn handler using the App extension trait
+        // The handler receives the typed struct as In<SpawnEntityAction> and can use any Bevy system params.
+        .register_ai_action::<SpawnEntityAction, _, _>(spawn_entity_handler)
         .add_systems(Startup, setup)
-        .add_systems(Update, check_response)
-        //.add_observer(on_model_load_complete)
-        .run();
+        .add_systems(Update, check_response);
+
+    app.run();
+
+    // Fps counters are static — print directly.
+    print_fps();
 }
 
-fn setup(mut commands: Commands, mut registry: ResMut<AiActionRegistry>, mut request: AiRequest) {
+fn spawn_entity_handler(
+    In(action): In<SpawnEntityAction>,
+    mut cmds: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    cmds.spawn((
+        AiSpawned,
+        Name::new(format!("spawned:{}", action.prefab)),
+        Transform::from_translation(Vec3::new(action.x, action.y, 0.0)),
+        Mesh3d(meshes.add(Cuboid::new(1.0, 1.0, 1.0))),
+        MeshMaterial3d(materials.add(StandardMaterial {
+            base_color: Color::linear_rgb(0.0, 1.0, 0.0),
+            ..Default::default()
+        })),
+    ));
+    info!(
+        "Registry handler spawned '{}' at ({}, {})",
+        action.prefab, action.x, action.y
+    );
+}
+
+fn setup(mut commands: Commands, mut request: AiRequest) {
     // light
     commands.spawn((
         PointLight {
@@ -62,31 +95,6 @@ fn setup(mut commands: Commands, mut registry: ResMut<AiActionRegistry>, mut req
 
     // Store the player so the model-load observer can queue a request later
     commands.insert_resource(ExamplePlayer(player));
-
-    // Register a spawn handler using the auto-generated register method.
-    // The handler receives the typed struct as In<SpawnEntityAction> and can use any Bevy system params.
-    SpawnEntityAction::register(
-        &mut registry,
-        |In(action): In<SpawnEntityAction>,
-         mut cmds: Commands,
-         mut meshes: ResMut<Assets<Mesh>>,
-         mut materials: ResMut<Assets<StandardMaterial>>| {
-            cmds.spawn((
-                AiSpawned,
-                Name::new(format!("spawned:{}", action.prefab)),
-                Transform::from_translation(Vec3::new(action.x, action.y, 0.0)),
-                Mesh3d(meshes.add(Cuboid::new(1.0, 1.0, 1.0))),
-                MeshMaterial3d(materials.add(StandardMaterial {
-                    base_color: Color::linear_rgb(0.0, 1.0, 0.0),
-                    ..Default::default()
-                })),
-            ));
-            info!(
-                "Registry handler spawned '{}' at ({}, {})",
-                action.prefab, action.x, action.y
-            );
-        },
-    );
 
     request.ask_action::<SpawnEntityAction>(
         player,
